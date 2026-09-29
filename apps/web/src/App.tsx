@@ -701,7 +701,9 @@ function readSharedState(): SharedState {
   if (typeof location === 'undefined') return fallback;
   const p = new URLSearchParams(location.search);
   const number = (name: string, value: number, min: number, max: number): number => {
-    const parsed = Number(p.get(name));
+    const raw = p.get(name);
+    if (raw == null || raw.trim() === '') return value;
+    const parsed = Number(raw);
     return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : value;
   };
   const layers: RenderLayer[] = ['natural', 'false', 'ndvi', 'difference', 'band'];

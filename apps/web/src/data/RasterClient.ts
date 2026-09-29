@@ -239,8 +239,9 @@ export class RasterClient {
     if (!response.ok) {
       let detail: string | undefined;
       try {
-        const payload = await response.json() as { detail?: string; error?: string };
-        detail = payload.detail ?? payload.error;
+        const payload = await response.json() as { detail?: unknown; error?: unknown };
+        const value = payload.detail ?? payload.error;
+        detail = typeof value === 'string' ? value : value == null ? undefined : JSON.stringify(value);
       } catch {
         detail = await response.text().catch(() => undefined);
       }
