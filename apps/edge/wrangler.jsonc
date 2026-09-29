@@ -1,0 +1,53 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "terrascope",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "../web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/raster/api/*"]
+  },
+  "r2_buckets": [
+    { "binding": "TILE_CACHE", "bucket_name": "terrascope-tiles", "preview_bucket_name": "terrascope-tiles-dev" }
+  ],
+  "containers": [
+    {
+      "class_name": "RasterContainer",
+      "image": "../../services/raster/Dockerfile",
+      "max_instances": 3,
+      "instance_type": "standard-1"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "RASTER_CONTAINER", "class_name": "RasterContainer" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["RasterContainer"] }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.05 }
+  },
+  "env": {
+    "staging": {
+      "name": "terrascope-staging",
+      "r2_buckets": [
+        { "binding": "TILE_CACHE", "bucket_name": "terrascope-tiles-staging" }
+      ],
+      "containers": [
+        { "class_name": "RasterContainer", "image": "../../services/raster/Dockerfile", "max_instances": 1, "instance_type": "standard-1" }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "RASTER_CONTAINER", "class_name": "RasterContainer" }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "terrascope",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/web",
+    "apps/edge",
+    "packages/contracts"
+  ],
+  "scripts": {
+    "dev": "npm --workspace @terrascope/web run dev",
+    "build": "npm --workspace @terrascope/web run build",
+    "typecheck": "npm --workspace @terrascope/web run typecheck",
+    "test": "npm --workspace @terrascope/web run test",
+    "test:parity": "npm --workspace @terrascope/web run test:parity",
+    "test:gpu": "node scripts/run-gpu-parity.mjs",
+    "typecheck:edge": "npm --workspace @terrascope/edge run typecheck",
+    "deploy:staging": "npm run build && npm --workspace @terrascope/edge run deploy:staging",
+    "deploy": "npm run build && npm --workspace @terrascope/edge run deploy",
+    "benchmark": "node scripts/benchmark.mjs",
+    "verify": "bash scripts/verify.sh"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

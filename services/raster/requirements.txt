@@ -1,0 +1,6 @@
+fastapi==0.121.2
+httpx==0.28.1
+numpy==2.5.3
+pydantic==2.13.1
+rasterio==1.5.1
+uvicorn==0.41.0
