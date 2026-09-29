@@ -658,8 +658,8 @@ function useSceneStatus(scene: MapScene | null): MapStatus {
   );
   return useSyncExternalStore(
     subscribe,
-    () => scene?.status ?? { phase: 'starting' as const, message: 'Starting…' },
-    () => ({ phase: 'starting' as const, message: 'Starting…' }),
+    () => scene?.status ?? IDLE_STATUS,
+    () => IDLE_STATUS,
   );
 }
 
@@ -776,6 +776,8 @@ const IDLE_STATS: MapStats = {
   decodeMs: 0,
   cacheHits: 0,
 };
+
+const IDLE_STATUS: MapStatus = { phase: 'starting', message: 'Starting…' };
 
 interface SearchResults {
   scenes: Scene[];
