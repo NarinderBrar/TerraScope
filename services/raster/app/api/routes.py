@@ -7,14 +7,18 @@ what imagery means live here -- that is the provider adapter's job.
 
 from __future__ import annotations
 
+from app import gdal_config  # noqa: F401  (import order is load-bearing)
+
+import asyncio
 import os
 import time
 import base64
 import json
 import math
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
+from fastapi.concurrency import run_in_threadpool
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -32,8 +36,11 @@ from app.providers.sentinel2 import (
 )
 from app.tiles.analysis import NDVI_EPSILON, ndvi
 from app.tiles.builder import build_tile
+from app.tiles.dataset_cache import TILE_WORKERS
+from app.tiles import frame_cache
+from app.tiles.mosaic import fill as mosaic_fill, uncovered as mosaic_uncovered
 from app.tiles.window import (
-    AssetPool, DisplayTileGrid, TileOutOfRange, ground_resolution_m,
+    AssetPool, DisplayTileGrid, FrameGrid, FrameOutOfRange, TileOutOfRange, ground_resolution_m,
     lon_to_tile_x, lat_to_tile_y,
 )
 
@@ -45,10 +52,31 @@ TILE_SIZE = 256
 #: Ceiling on scenes returned in one page, independent of client input.
 MAX_RESULTS = 50
 MAX_ANALYSIS_PIXELS = 1_000_000
+#: A wide frame may read an overview up to 2x coarser than its pixel: for a z11
+#: view the next finer level measured at ~2.3x the bytes per band (2.8 MB vs
+#: 1.2 MB). Only for wide frames, though. Zoomed in, the window is small, the
+#: saving is small, and a 2x coarser read is exactly what the eye notices --
+#: at z14 it meant 20 m data on a 7.5 m screen.
+FRAME_OVERVIEW_OVERSAMPLING = 2.0
+#: Same-pass granules a frame may composite beyond its own. A view at the
+#: timelapse's minimum zoom can touch at most four granules.
+MAX_MOSAIC_GRANULES = 3
+#: Ground pixel size (m) from which a frame takes the coarser-overview shortcut.
+FRAME_OVERSAMPLING_FROM_M = 60.0
+
+
+def _frame_oversampling(grid: FrameGrid) -> float | None:
+    _, south, _, north = grid.bounds_wgs84()
+    ground_m = grid.resolution_m * math.cos(math.radians((south + north) / 2.0))
+    return FRAME_OVERVIEW_OVERSAMPLING if ground_m >= FRAME_OVERSAMPLING_FROM_M else None
 
 app = FastAPI(title="TerraScope raster service", version="0.1.0")
 _stac = StacClient()
 _STARTED = time.time()
+#: Admission to tile building. Waiting happens here, on the event loop, rather
+#: than in a worker thread: a request the browser has already abandoned then
+#: costs nothing, and the threadpool stays free for health and search.
+_TILE_ADMISSION = asyncio.Semaphore(TILE_WORKERS)
 
 
 class SearchBody(BaseModel):
@@ -59,6 +87,8 @@ class SearchBody(BaseModel):
     limit: int = Field(default=20, ge=1, le=MAX_RESULTS)
     collections: list[str] | None = None
     cursor: str | None = Field(default=None, max_length=4096)
+    #: Acquisition-date order. 'asc' starts at the beginning of the range.
+    sort: Literal["asc", "desc"] = "desc"
 
     @field_validator("bbox")
     @classmethod
@@ -117,6 +147,11 @@ async def _tile_range(_: Request, exc: TileOutOfRange) -> JSONResponse:
     return JSONResponse({"error": str(exc), "type": "TileOutOfRange"}, status_code=400)
 
 
+@app.exception_handler(FrameOutOfRange)
+async def _frame_range(_: Request, exc: FrameOutOfRange) -> JSONResponse:
+    return JSONResponse({"error": str(exc), "type": "FrameOutOfRange"}, status_code=400)
+
+
 @app.exception_handler(Eot1Error)
 async def _protocol(_: Request, exc: Eot1Error) -> JSONResponse:
     return JSONResponse({"error": str(exc), "type": "Eot1Error"}, status_code=500)
@@ -125,11 +160,27 @@ async def _protocol(_: Request, exc: Eot1Error) -> JSONResponse:
 def _normalise(item: dict[str, Any], collection: str) -> dict[str, Any] | None:
     try:
         scene = parse_scene(item, collection)
-    except UnsupportedScene:
+    except (UnsupportedScene, StacError):
+        # An item the service cannot read -- no usable bands, or assets on a
+        # scheme or host outside the allowlist (some 2017 items list s3://
+        # hrefs) -- is left out of the results. Failing the whole search over
+        # one such item would hide every readable scene around it.
         return None
     bands = {
         name: {"available": True, "resolutionM": asset.gsd, "asset": asset.asset_key}
         for name, asset in scene.bands.items()
+    }
+    return {
+        "id": scene.item_id,
+        "collection": collection,
+        "datetime": scene.datetime,
+        "bbox": scene.bbox,
+        "geometry": scene.geometry,
+        "cloudCover": scene.cloud_cover,
+        "bands": bands,
+        "attribution": scene.attribution,
+        "processingVersion": PROCESSING_VERSION,
+        "qualityAvailable": scene.quality is not None,
     }
 
 
@@ -146,7 +197,7 @@ def _decode_cursor(token: str) -> dict[str, Any]:
         raise StacError("invalid search cursor", status=400) from exc
     if not isinstance(body, dict):
         raise StacError("invalid search cursor", status=400)
-    allowed = {"collections", "bbox", "datetime", "limit", "sortby", "query", "token"}
+    allowed = {"collections", "bbox", "datetime", "limit", "sortby", "query", "token", "next"}
     if set(body) - allowed:
         raise StacError("search cursor contains unsupported fields", status=400)
     collections = body.get("collections")
@@ -172,22 +223,13 @@ def _next_cursor(raw: dict[str, Any]) -> str | None:
             continue
         # Decode applies the same allowlist when the token returns. Applying it
         # now avoids emitting a cursor we know cannot be consumed.
-        token = _encode_cursor(link["body"])
-        _decode_cursor(token)
-        return token
+        try:
+            token = _encode_cursor(link["body"])
+            _decode_cursor(token)
+            return token
+        except StacError:
+            continue
     return None
-    return {
-        "id": scene.item_id,
-        "collection": collection,
-        "datetime": scene.datetime,
-        "bbox": scene.bbox,
-        "geometry": scene.geometry,
-        "cloudCover": scene.cloud_cover,
-        "bands": bands,
-        "attribution": scene.attribution,
-        "processingVersion": PROCESSING_VERSION,
-        "qualityAvailable": scene.quality is not None,
-    }
 
 
 @app.get("/api/health")
@@ -246,11 +288,11 @@ def search_scenes(body: SearchBody) -> dict[str, Any]:
             (-180.0, body.bbox[1], body.bbox[2], body.bbox[3]),
         ]
         responses = [
-            _stac.search(collections=collections, bbox=part, start=body.start, end=body.end, max_cloud_cover=body.maxCloudCover, limit=body.limit)
+            _stac.search(collections=collections, bbox=part, start=body.start, end=body.end, max_cloud_cover=body.maxCloudCover, limit=body.limit, direction=body.sort)
             for part in parts
         ]
         features = {feature.get("id"): feature for response in responses for feature in response.get("features", []) if feature.get("id")}
-        ordered = sorted(features.values(), key=lambda feature: feature.get("properties", {}).get("datetime", ""), reverse=True)
+        ordered = sorted(features.values(), key=lambda feature: feature.get("properties", {}).get("datetime", ""), reverse=body.sort == "desc")
         raw = {"features": ordered[:body.limit], "numberMatched": sum(int(response.get("numberMatched") or 0) for response in responses), "links": []}
     else:
         raw = _stac.search(
@@ -260,10 +302,13 @@ def search_scenes(body: SearchBody) -> dict[str, Any]:
             end=body.end,
             max_cloud_cover=body.maxCloudCover,
             limit=body.limit,
+            direction=body.sort,
         )
     scenes: list[dict[str, Any]] = []
     for feature in raw.get("features", []):
         collection = feature.get("collection") or (collections[0] if collections else "")
+        if collection in COLLECTIONS:
+            _stac.remember(collection, feature)
         normalised = _normalise(feature, collection)
         if normalised is not None:
             scenes.append(normalised)
@@ -303,7 +348,8 @@ def scene_detail(collection: str, scene: str) -> dict[str, Any]:
 
 
 @app.get("/api/tiles/{collection}/{scene}/{z}/{x}/{y}")
-def tile(
+async def tile(
+    request: Request,
     collection: str,
     scene: str,
     z: int,
@@ -327,15 +373,24 @@ def tile(
 
     grid = DisplayTileGrid(z=z, x=x, y=y, size=TILE_SIZE)
     names = PROFILE_BANDS[profile]
-    item = _stac.get_item(collection, scene)
-    parsed = parse_scene(item, collection)
-    missing = [n for n in names if n not in parsed.bands]
-    if missing:
-        raise UnsupportedScene(f"scene {scene} lacks bands {missing} required by profile {profile}")
 
-    with AssetPool() as pool:
-        built = build_tile(parsed, grid, names, apply_quality_mask=qualityMask, pool=pool)
-    blob = encode(built)
+    def produce() -> bytes:
+        item = _stac.get_item(collection, scene)
+        parsed = parse_scene(item, collection)
+        missing = [n for n in names if n not in parsed.bands]
+        if missing:
+            raise UnsupportedScene(f"scene {scene} lacks bands {missing} required by profile {profile}")
+        with AssetPool() as pool:
+            built = build_tile(parsed, grid, names, apply_quality_mask=qualityMask, pool=pool)
+        return encode(built)
+
+    async with _TILE_ADMISSION:
+        # Panning cancels most requests before they reach the front of the
+        # queue. GDAL work cannot be interrupted once started, so this check is
+        # the only point where an abandoned tile can still be dropped.
+        if await request.is_disconnected():
+            return Response(status_code=499)
+        blob = await run_in_threadpool(produce)
 
     return Response(
         content=blob,
@@ -351,6 +406,102 @@ def tile(
             "Access-Control-Expose-Headers": "X-EOT-Version, X-Tile-Profile",
         },
     )
+
+
+@app.get("/api/frames/{collection}/{scene}")
+async def frame(
+    request: Request,
+    collection: str,
+    scene: str,
+    bbox: str = Query(max_length=128, description="left,bottom,right,top in EPSG:3857 metres"),
+    width: int = Query(ge=1, le=1024),
+    height: int = Query(ge=1, le=1024),
+    profile: str = Query(default="rgbn", pattern="^(rgb|rednir|rgbn)$"),
+    qualityMask: bool = Query(default=True),
+    mosaic: str = Query(default="", max_length=512, description="comma-separated same-pass granules that fill gaps"),
+) -> Response:
+    """One calibrated, quality-masked frame of a locked view.
+
+    The science is identical to a tile's -- same reads, calibration, masks and
+    EOT1 encoding -- on an arbitrary Web Mercator rectangle instead of an XYZ
+    cell. A timelapse asks for one of these per date. Frames are cached on
+    disk because replaying and scrubbing request the same frames repeatedly.
+
+    ``mosaic`` names other granules of the same acquisition, for views that
+    cross a granule edge. They are read only if ``scene`` leaves pixels
+    uncovered, and only where they overlap the frame (see app.tiles.mosaic).
+    """
+    if collection not in COLLECTIONS:
+        raise StacError("collection not permitted", status=403)
+    validate_id(scene)
+    extras = [validate_id(v) for v in mosaic.split(",") if v][:MAX_MOSAIC_GRANULES]
+    try:
+        left, bottom, right, top = (float(v) for v in bbox.split(","))
+    except ValueError as exc:
+        raise FrameOutOfRange("bbox must be four comma-separated numbers") from exc
+    grid = FrameGrid.from_bounds(left, bottom, right, top, width, height)
+    names = PROFILE_BANDS[profile]
+    oversampling = _frame_oversampling(grid)
+    key = frame_cache.frame_key({
+        "collection": collection, "scene": scene, "grid": grid.to_dict(),
+        "profile": profile, "qualityMask": qualityMask, "version": PROCESSING_VERSION,
+        "overviewOversampling": oversampling, "mosaic": extras, "masks": "clear-v1",
+    })
+    headers = {
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "X-EOT-Version": PROCESSING_VERSION,
+        "X-Tile-Profile": profile,
+        "X-Quality-Mask": "on" if qualityMask else "off",
+        "Access-Control-Expose-Headers": "X-EOT-Version, X-Tile-Profile, X-Terrascope-Cache",
+    }
+
+    cached = await run_in_threadpool(frame_cache.get, key)
+    if cached is not None:
+        return Response(content=cached, media_type="application/octet-stream", headers={**headers, "X-Terrascope-Cache": "disk"})
+
+    def granule(item_id: str) -> Any:
+        parsed = parse_scene(_stac.get_item(collection, item_id), collection)
+        missing = [n for n in names if n not in parsed.bands]
+        if missing:
+            raise UnsupportedScene(f"scene {item_id} lacks bands {missing} required by profile {profile}")
+        return parsed
+
+    def produce() -> bytes:
+        primary = granule(scene)
+        with AssetPool() as pool:
+            built = build_tile(
+                primary, grid, names, apply_quality_mask=qualityMask, pool=pool,
+                overview_oversampling=oversampling, include_clear_mask=True,
+            )
+            frame_west, frame_south, frame_east, frame_north = grid.bounds_wgs84()
+            for item_id in extras:
+                if not mosaic_uncovered(built).any():
+                    break  # The usual case: one granule covers the view.
+                other = granule(item_id)
+                # Same acquisition only. Compositing different days would put
+                # two dates in one frame of a timelapse.
+                if str(other.datetime)[:10] != str(primary.datetime)[:10]:
+                    raise StacError(f"mosaic granule {item_id} is not from the same date as {scene}", status=400)
+                if len(other.bbox) >= 4:
+                    west, south, east, north = other.bbox[:4]
+                    if east < frame_west or west > frame_east or north < frame_south or south > frame_north:
+                        continue  # No overlap: skip the remote opens entirely.
+                built = mosaic_fill(built, build_tile(
+                    other, grid, names, apply_quality_mask=qualityMask, pool=pool,
+                    overview_oversampling=oversampling, include_clear_mask=True,
+                ))
+        blob = encode(built)
+        frame_cache.put(key, blob)
+        return blob
+
+    async with _TILE_ADMISSION:
+        # Same admission as tiles: an abandoned frame (the user left the
+        # timelapse) is dropped here, before any GDAL work starts.
+        if await request.is_disconnected():
+            return Response(status_code=499)
+        blob = await run_in_threadpool(produce)
+
+    return Response(content=blob, media_type="application/octet-stream", headers={**headers, "X-Terrascope-Cache": "miss"})
 
 
 @app.get("/api/ground-resolution")
@@ -407,7 +558,10 @@ def region_statistics(body: RegionStatsBody) -> dict[str, Any]:
     above = below = 0
     hist = np.zeros(32, dtype=np.int64)
     hist_delta = np.zeros(32, dtype=np.int64)
-    with AssetPool() as pool_a, AssetPool() as pool_b:
+    # One slot for both scenes: nesting two borrows can deadlock once every
+    # slot is held by a request waiting for its second.
+    with AssetPool() as pool_a:
+        pool_b = pool_a
         for grid in grids:
             region = _region_mask(grid, body.bbox)
             tile_a = build_tile(scene_a, grid, ["red", "nir"], pool=pool_a)

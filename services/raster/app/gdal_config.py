@@ -17,21 +17,34 @@ import os
 GDAL_DISABLE_READDIR_ON_OPEN = "EMPTY_DIR"
 #: Do not probe sibling extensions (a .ovr, a .aux.xml) for every asset.
 CPL_VSIL_CURL_ALLOWED_EXTENSIONS = ".tif"
-#: Ask for several byte ranges per request; COG tiles are scattered.
-GDAL_HTTP_MULTIRANGE = "YES"
+#: S3 does not support multipart/byteranges; multi-range causes ZIP/TIFF decode errors.
+GDAL_HTTP_MULTIRANGE = "NO"
 #: Coalesce adjacent ranges, which a tiled TIFF scan produces constantly.
 GDAL_HTTP_MERGE_CONSECUTIVE_RANGES = "YES"
 #: Read enough of the header at open time to plan the reads.
 GDAL_INGESTED_BYTES_AT_OPEN = "16384"
-#: Larger transfer chunk than the 16 KiB default.
-CPL_VSIL_CURL_CHUNK_SIZE = "4194304"
-#: Cache decoded tiles so the second pass over a band hits memory.
-VSI_CACHE = "TRUE"
-#: Total decoded-block memory across all open datasets. Bounds container RSS.
-VSI_CACHE_SIZE = str(128 * 1024 * 1024)
+#: GDAL rounds every block read up to a whole chunk. At 4 MiB one z12 band
+#: fetched 16 MiB to use 1.3 MiB; at 16 KiB it fetches ~1.3 MiB in the same
+#: number of requests, because consecutive chunks are merged anyway.
+CPL_VSIL_CURL_CHUNK_SIZE = "16384"
+#: Downloaded byte ranges live in /vsicurl's process-wide region cache, shared
+#: by every dataset handle in every slot. That is the cache that makes a
+#: revisited tile cheap, and its 16 MiB default holds less than one screen.
+CPL_VSIL_CURL_CACHE_SIZE = str(256 * 1024 * 1024)
+#: VSI_CACHE is a second cache *per open file* (VSI_CACHE_SIZE each). With
+#: several slots of several handles it multiplies memory while duplicating
+#: what the region cache above already holds, so it stays off.
+VSI_CACHE = "FALSE"
 #: Reuse connections; S2 COGs are all on the same regional endpoint.
 GDAL_HTTP_MAX_RETRY = "3"
 GDAL_HTTP_RETRY_DELAY = "1"
+#: A stalled range request must fail (and be retried) rather than hold a tile
+#: slot forever. Abort on sustained low throughput, not total duration, so a
+#: slow-but-progressing transfer on a weak link is not cut off mid-block.
+GDAL_HTTP_CONNECTTIMEOUT = "10"
+GDAL_HTTP_LOW_SPEED_TIME = "10"
+GDAL_HTTP_LOW_SPEED_LIMIT = "4096"
+GDAL_HTTP_TIMEOUT = "120"
 
 _SETTINGS = {
     "GDAL_DISABLE_READDIR_ON_OPEN": GDAL_DISABLE_READDIR_ON_OPEN,
@@ -40,10 +53,14 @@ _SETTINGS = {
     "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": GDAL_HTTP_MERGE_CONSECUTIVE_RANGES,
     "GDAL_INGESTED_BYTES_AT_OPEN": GDAL_INGESTED_BYTES_AT_OPEN,
     "CPL_VSIL_CURL_CHUNK_SIZE": CPL_VSIL_CURL_CHUNK_SIZE,
+    "CPL_VSIL_CURL_CACHE_SIZE": CPL_VSIL_CURL_CACHE_SIZE,
     "VSI_CACHE": VSI_CACHE,
-    "VSI_CACHE_SIZE": VSI_CACHE_SIZE,
     "GDAL_HTTP_MAX_RETRY": GDAL_HTTP_MAX_RETRY,
     "GDAL_HTTP_RETRY_DELAY": GDAL_HTTP_RETRY_DELAY,
+    "GDAL_HTTP_CONNECTTIMEOUT": GDAL_HTTP_CONNECTTIMEOUT,
+    "GDAL_HTTP_LOW_SPEED_TIME": GDAL_HTTP_LOW_SPEED_TIME,
+    "GDAL_HTTP_LOW_SPEED_LIMIT": GDAL_HTTP_LOW_SPEED_LIMIT,
+    "GDAL_HTTP_TIMEOUT": GDAL_HTTP_TIMEOUT,
 }
 
 

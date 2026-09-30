@@ -77,6 +77,10 @@ export interface SearchRequest {
   maxCloudCover?: number;
   limit?: number;
   cursor?: string;
+  /** Acquisition-date order. 'asc' puts the start of the range first. Defaults to 'desc'. */
+  sort?: 'asc' | 'desc';
+  /** Restrict to these collections (must be ones the service serves). Defaults to all. */
+  collections?: string[];
 }
 
 export interface SearchResponse {

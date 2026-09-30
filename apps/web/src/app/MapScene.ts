@@ -8,6 +8,7 @@
  */
 
 import {
+  MAX_ZOOM,
   createCamera,
   panBy,
   screenToLonLat,
@@ -20,18 +21,23 @@ import {
 import { GpuContext, WebGpuUnavailable } from '../gpu/GpuContext';
 import { NdviGpu, type UploadedTile } from '../gpu/AnalysisKernels';
 import { RasterRenderer, type DrawTile, type RenderSettings, type RenderTile } from '../gpu/RasterRenderer';
-import { RasterClient, RasterError, type TileDescriptor } from '../data/RasterClient';
+import { RasterClient, RasterError, type RequestProgress, type TileDescriptor } from '../data/RasterClient';
 import type { NumericTile, Scene } from '@terrascope/contracts';
 import { lonLatToWorldPx, TILE_SIZE } from '@terrascope/contracts';
 import { computeNdvi } from '../analysis/AnalysisPipelines';
+import { loadOrder, planFrame, type FramePlan, type FrameScene } from './timelapsePlan';
 
 /** The profile every view requests. Only this one has all four bands. */
 const PROFILE = 'rgbn';
+/** Delay before a tile that failed for a reason other than 404 is requested again. */
+const TILE_RETRY_MS = 10_000;
 
 export interface MapStats {
   resident: number;
   pending: number;
   failed: number;
+  /** Most recent tile failure other than 404, for the HUD. */
+  lastTileError: string | null;
   /** Bytes held by decoded tiles, from the server's own header where present. */
   bytes: number;
   zoom: number;
@@ -41,6 +47,13 @@ export interface MapStats {
   downloadedBytes: number;
   decodeMs: number;
   cacheHits: number;
+  /** Milliseconds from selecting the current scene to its first tile on the GPU. */
+  firstImageMs: number | null;
+  /** Tiles the current view is made of, and how many of them are settled. */
+  neededTiles: number;
+  neededDone: number;
+  /** Tile requests in flight, by phase. */
+  inFlight: RequestProgress;
 }
 
 export interface MapStatus {
@@ -101,7 +114,13 @@ export class MapScene {
   #gpu = new Map<string, RenderTile>();
 
   #pending = new Map<string, AbortController>();
-  #failed = new Set<string>();
+  /** Tile key -> earliest time (ms) it may be requested again. */
+  #failed = new Map<string, number>();
+  #lastTileError: string | null = null;
+  #needTotal = 0;
+  #needDone = 0;
+  #sceneStartedAt = 0;
+  #firstImageMs: number | null = null;
   #frame = 0;
   #lastFrameMs = 0;
   #disposed = false;
@@ -111,6 +130,16 @@ export class MapScene {
   #status: MapStatus = { phase: 'starting', message: 'Starting WebGPU…' };
   #stats: MapStats = emptyStats();
   #listeners = new Set<() => void>();
+
+  /** Camera and viewport together, replaced whenever either changes. The DOM basemap follows this. */
+  #view: MapView = { camera: this.#camera, viewport: this.#viewport };
+
+  #timelapse: TimelapseSession | null = null;
+  /** Auto-remove frames cloudier than this fraction of the view; null = off. Kept across timelapses. */
+  #autoCloud: number | null = DEFAULT_AUTO_CLOUD;
+  #timelapseSnapshot: TimelapseState = IDLE_TIMELAPSE;
+  /** Frame index actually on screen: the current one, or its nearest stand-in. */
+  #drawnFrame: number | null = null;
 
   constructor(canvas: HTMLCanvasElement, client: RasterClient = new RasterClient()) {
     this.#canvas = canvas;
@@ -152,6 +181,14 @@ export class MapScene {
     return this.#context?.info ?? null;
   }
 
+  get view(): MapView {
+    return this.#view;
+  }
+
+  get timelapse(): TimelapseState {
+    return this.#timelapseSnapshot;
+  }
+
   get canCompare(): boolean {
     return this.#scene != null;
   }
@@ -162,11 +199,12 @@ export class MapScene {
     try {
       this.#context = await GpuContext.create();
       this.#context.attachCanvas(this.#canvas);
+      this.resize();
       this.#context.configure();
       this.#context.onDeviceLost((info) => {
         this.#setStatus({
           phase: 'error',
-          message: `The GPU device was lost (${info.reason}). Reload to continue.`,
+          message: `The GPU device was lost (${info.message || info.reason}). Reload to continue.`,
         });
         this.#stop();
       });
@@ -197,6 +235,7 @@ export class MapScene {
   dispose(): void {
     this.#disposed = true;
     this.#stop();
+    this.stopTimelapse();
     for (const controller of this.#pending.values()) controller.abort();
     this.#pending.clear();
     for (const tile of this.#gpu.values()) this.#renderer?.destroyTile(tile);
@@ -211,6 +250,8 @@ export class MapScene {
   /** Load a primary date. Clears every tile, because tile bytes are date-specific. */
   async setScene(scene: Scene): Promise<void> {
     this.#scene = scene;
+    this.#sceneStartedAt = performance.now();
+    this.#firstImageMs = null;
     this.#clearTiles();
     this.#setSceneB(this.#settings.swipeEnabled ? this.#sceneB : null);
     this.#invalidate();
@@ -247,8 +288,330 @@ export class MapScene {
     if (next.swipeEnabled && !this.#sceneB) next.swipeEnabled = false;
     if (!next.swipeEnabled && next.layer === 'difference' && !this.#sceneB) next.layer = 'ndvi';
     this.#settings = next;
-    if (qualityChanged) this.#clearTiles();
+    if (qualityChanged) {
+      this.#clearTiles();
+      // The mask is applied server-side, so loaded frames are now stale.
+      // Same frames, same locked view: start over with the new policy.
+      if (this.#timelapse) this.startTimelapse(this.#timelapse.frames);
+    }
     this.#invalidate();
+  }
+
+  // ---- timelapse ---------------------------------------------------------
+
+  /**
+   * Lock the view and play `frames` (already selected, oldest first).
+   *
+   * Every frame is read for exactly the current view, so the camera is frozen
+   * until `stopTimelapse`. Tile requests in flight are dropped: on a slow link
+   * they would only compete with the first frame for bandwidth.
+   */
+  startTimelapse(frames: readonly FrameScene[]): void {
+    if (frames.length === 0) return;
+    this.stopTimelapse();
+    for (const controller of this.#pending.values()) controller.abort();
+    this.#pending.clear();
+    // Frames carry one date each; swipe and difference need two.
+    this.#setSceneB(null);
+    if (this.#settings.layer === 'difference') this.#settings = { ...this.#settings, layer: 'ndvi' };
+    this.#settings = { ...this.#settings, swipeEnabled: false };
+
+    this.#timelapse = {
+      frames: [...frames],
+      status: frames.map(() => 'idle' as FrameStatus),
+      excluded: frames.map(() => false),
+      viewCloud: frames.map(() => null),
+      autoRemoved: frames.map(() => false),
+      manual: frames.map(() => false),
+      userSeeked: false,
+      plan: planFrame(this.viewBounds(), this.#viewport),
+      order: loadOrder(frames.length),
+      tiles: new Map(),
+      loading: new Set(),
+      controller: new AbortController(),
+      index: 0,
+      playing: false,
+      fps: 4,
+      loop: true,
+      buffering: false,
+      lastStep: 0,
+    };
+    this.#sceneStartedAt = performance.now();
+    this.#firstImageMs = null;
+    this.#pumpFrames();
+    this.#publishTimelapse();
+    this.#invalidate();
+  }
+
+  /** Release every frame and unlock the view. */
+  stopTimelapse(): void {
+    const timelapse = this.#timelapse;
+    if (!timelapse) return;
+    timelapse.controller.abort();
+    for (const tile of timelapse.tiles.values()) this.#renderer?.destroyTile(tile);
+    this.#timelapse = null;
+    this.#drawnFrame = null;
+    this.#publishTimelapse();
+    this.#invalidate();
+  }
+
+  play(): void {
+    const timelapse = this.#timelapse;
+    if (!timelapse) return;
+    if (!timelapse.loop && timelapse.index >= timelapse.frames.length - 1) timelapse.index = 0;
+    timelapse.userSeeked = true;
+    timelapse.playing = true;
+    timelapse.lastStep = performance.now();
+    this.#publishTimelapse();
+  }
+
+  pause(): void {
+    const timelapse = this.#timelapse;
+    if (!timelapse) return;
+    timelapse.playing = false;
+    timelapse.buffering = false;
+    this.#publishTimelapse();
+  }
+
+  /** Jump to a frame. Pauses, and fetches that frame next if it is not loaded. */
+  seek(index: number): void {
+    const timelapse = this.#timelapse;
+    if (!timelapse) return;
+    timelapse.index = Math.max(0, Math.min(timelapse.frames.length - 1, Math.round(index)));
+    timelapse.userSeeked = true;
+    timelapse.playing = false;
+    timelapse.buffering = false;
+    if (timelapse.status[timelapse.index] === 'idle') {
+      timelapse.order = [timelapse.index, ...timelapse.order.filter((i) => i !== timelapse.index)];
+      this.#pumpFrames();
+    }
+    this.#publishTimelapse();
+    // Paused with everything loaded, the loop is idle and draws only when
+    // invalidated -- without this the label moves and the picture does not.
+    this.#invalidate();
+  }
+
+  setPlayback(options: { fps?: number; loop?: boolean }): void {
+    const timelapse = this.#timelapse;
+    if (!timelapse) return;
+    if (options.fps != null) timelapse.fps = Math.max(0.5, Math.min(30, options.fps));
+    if (options.loop != null) timelapse.loop = options.loop;
+    this.#publishTimelapse();
+  }
+
+  /**
+   * Remove a date from the timelapse, or restore it.
+   *
+   * A toggle rather than a delete, so a mis-click is one more click to undo.
+   * A removed date is skipped by playback and not fetched while removed; one
+   * already loaded stays on the GPU, so restoring it is instant.
+   */
+  toggleFrame(index: number): void {
+    const timelapse = this.#timelapse;
+    if (!timelapse || index < 0 || index >= timelapse.frames.length) return;
+    timelapse.excluded[index] = !timelapse.excluded[index];
+    timelapse.manual[index] = true;
+    timelapse.autoRemoved[index] = false;
+    if (!timelapse.excluded[index]) this.#pumpFrames();
+    this.#publishTimelapse();
+    this.#invalidate();
+  }
+
+  /**
+   * Set the cloud rule: frames with more than `threshold` of the view under
+   * cloud are removed automatically (null turns it off). Re-applied to every
+   * loaded frame, except dates the user has toggled by hand.
+   */
+  setAutoCloud(threshold: number | null): void {
+    this.#autoCloud = threshold;
+    const timelapse = this.#timelapse;
+    if (timelapse) {
+      timelapse.frames.forEach((_, i) => this.#applyCloudRule(timelapse, i));
+      this.#publishTimelapse();
+      this.#invalidate();
+    }
+  }
+
+  #applyCloudRule(timelapse: TimelapseSession, index: number): void {
+    const cloud = timelapse.viewCloud[index];
+    if (timelapse.manual[index] || cloud == null) return;
+    const remove = this.#autoCloud != null && cloud > this.#autoCloud;
+    if (remove && !timelapse.excluded[index]) {
+      timelapse.excluded[index] = true;
+      timelapse.autoRemoved[index] = true;
+      // Do not leave a paused view parked on a frame that just disappeared
+      // from the timeline; move to the nearest kept one.
+      if (timelapse.index === index && !timelapse.playing && !timelapse.userSeeked) {
+        const kept = nearestKept(timelapse, index);
+        if (kept != null) timelapse.index = kept;
+      }
+    } else if (!remove && timelapse.autoRemoved[index]) {
+      timelapse.excluded[index] = false;
+      timelapse.autoRemoved[index] = false;
+    }
+  }
+
+  /**
+   * Keep up to FRAME_CONCURRENCY frames in flight, in `order`.
+   *
+   * Until the first frame is on screen it travels alone: on a
+   * bandwidth-limited link, parallel frames would each arrive later.
+   */
+  #pumpFrames(): void {
+    const timelapse = this.#timelapse;
+    if (!timelapse) return;
+    const anyReady = timelapse.status.includes('ready');
+    while (timelapse.loading.size < (anyReady ? FRAME_CONCURRENCY : 1)) {
+      const next = timelapse.order.find((i) => timelapse.status[i] === 'idle' && !timelapse.excluded[i]);
+      if (next === undefined) return;
+      this.#loadFrame(timelapse, next);
+    }
+  }
+
+  #loadFrame(timelapse: TimelapseSession, index: number): void {
+    const scene = timelapse.frames[index];
+    timelapse.status[index] = 'loading';
+    timelapse.loading.add(index);
+    void this.client
+      .frame(
+        {
+          collection: scene.collection,
+          itemId: scene.id,
+          profile: PROFILE,
+          bounds3857: timelapse.plan.bounds3857,
+          width: timelapse.plan.width,
+          height: timelapse.plan.height,
+          qualityMask: this.#settings.qualityMask,
+          mosaic: scene.mosaicIds,
+        },
+        { signal: timelapse.controller.signal },
+      )
+      .then((tile) => {
+        timelapse.loading.delete(index);
+        if (timelapse !== this.#timelapse || timelapse.controller.signal.aborted) return;
+        const renderer = this.#renderer;
+        const ndvi = this.#ndvi;
+        if (!renderer || !ndvi) return;
+        const analysis = this.#analysis(tile);
+        ndvi.runNdvi(analysis);
+        timelapse.tiles.set(index, renderer.upload(frameKey(index), tile, analysis));
+        timelapse.status[index] = 'ready';
+        timelapse.viewCloud[index] = viewCloudFraction(tile);
+        this.#applyCloudRule(timelapse, index);
+        // Until the user takes over, rest on the earliest date still in the
+        // timeline. The first frame loads alone and may be removed as cloudy;
+        // the next kept one to arrive is often the last date (fetched early
+        // for scrubbing), so keep re-settling as earlier ones land.
+        if (!timelapse.playing && !timelapse.userSeeked) {
+          const earliest = timelapse.status.findIndex((st, i) => st === 'ready' && !timelapse.excluded[i]);
+          if (earliest >= 0) timelapse.index = earliest;
+        }
+        if (this.#firstImageMs === null) {
+          this.#firstImageMs = performance.now() - this.#sceneStartedAt;
+          console.info(`[TerraScope] first timelapse frame in ${this.#firstImageMs.toFixed(0)} ms (${scene.datetime.slice(0, 10)})`);
+        }
+        this.#pumpFrames();
+        this.#publishTimelapse();
+        this.#invalidate();
+      })
+      .catch((error: unknown) => {
+        timelapse.loading.delete(index);
+        if (timelapse !== this.#timelapse || timelapse.controller.signal.aborted) return;
+        timelapse.status[index] = 'failed';
+        this.#lastTileError = `Frame ${scene.datetime.slice(0, 10)} failed: ${describe(error)}`;
+        this.#pumpFrames();
+        this.#publishTimelapse();
+        this.#invalidate();
+      });
+  }
+
+  #renderTimelapse(renderer: RasterRenderer, timelapse: TimelapseSession): void {
+    const now = performance.now();
+    // Idle when nothing moves: paused, nothing loading, nothing changed.
+    if (!this.#dirty && !timelapse.playing && timelapse.loading.size === 0) return;
+    this.#dirty = false;
+
+    if (timelapse.playing && now - timelapse.lastStep >= 1000 / timelapse.fps) {
+      this.#stepPlayback(timelapse);
+      timelapse.lastStep = now;
+    }
+
+    const drawn = nearestReady(timelapse.status, timelapse.index);
+    this.#drawnFrame = drawn;
+    const started = performance.now();
+    if (renderer.ready) {
+      const tiles: DrawTile[] = drawn == null ? [] : [{
+        key: frameKey(drawn),
+        screenX: 0,
+        screenY: 0,
+        scale: 1,
+        size: { width: this.#viewport.width, height: this.#viewport.height },
+      }];
+      renderer.draw(tiles, (key) => timelapse.tiles.get(frameIndex(key)), this.#viewport, this.#settings);
+    }
+    this.#lastFrameMs = performance.now() - started;
+    // Removed dates are not part of what is being loaded.
+    const kept = timelapse.status.filter((_, i) => !timelapse.excluded[i]);
+    this.#needTotal = kept.length;
+    this.#needDone = kept.filter((s) => s === 'ready' || s === 'failed').length;
+    this.#publishStats();
+  }
+
+  /**
+   * Advance one frame, skipping frames that failed or were removed. A frame that is not
+   * loaded yet is not skipped: playback waits for it, like a video buffering,
+   * so the sequence is never shown out of order.
+   */
+  #stepPlayback(timelapse: TimelapseSession): void {
+    const count = timelapse.frames.length;
+    for (let step = 1; step <= count; step += 1) {
+      let next = timelapse.index + step;
+      if (next >= count) {
+        if (!timelapse.loop) {
+          timelapse.playing = false;
+          timelapse.buffering = false;
+          this.#publishTimelapse();
+          return;
+        }
+        next %= count;
+      }
+      const status = timelapse.status[next];
+      if (status === 'failed' || timelapse.excluded[next]) continue;
+      if (status === 'ready') {
+        timelapse.index = next;
+        timelapse.buffering = false;
+      } else {
+        timelapse.buffering = true;
+      }
+      this.#publishTimelapse();
+      return;
+    }
+    // Every other date is removed or failed: nothing left to advance to.
+    timelapse.playing = false;
+    timelapse.buffering = false;
+    this.#publishTimelapse();
+  }
+
+  #publishTimelapse(): void {
+    const timelapse = this.#timelapse;
+    this.#timelapseSnapshot = timelapse
+      ? {
+          active: true,
+          frames: timelapse.frames,
+          status: [...timelapse.status],
+          excluded: [...timelapse.excluded],
+          viewCloud: [...timelapse.viewCloud],
+          autoRemoved: [...timelapse.autoRemoved],
+          autoCloud: this.#autoCloud,
+          index: timelapse.index,
+          playing: timelapse.playing,
+          buffering: timelapse.buffering,
+          fps: timelapse.fps,
+          loop: timelapse.loop,
+          frameSize: { width: timelapse.plan.width, height: timelapse.plan.height },
+        }
+      : IDLE_TIMELAPSE;
+    this.#emit();
   }
 
   // ---- interaction -------------------------------------------------------
@@ -262,16 +625,23 @@ export class MapScene {
     if (this.#canvas.width !== width || this.#canvas.height !== height) {
       this.#canvas.width = width;
       this.#canvas.height = height;
+      if (this.#context?.configured) {
+        this.#context.configure();
+      }
     }
     this.#invalidate();
   }
 
   panByPixels(dx: number, dy: number): void {
+    // A timelapse's frames are read for one exact view; moving would show
+    // them in the wrong place.
+    if (this.#timelapse) return;
     this.#camera = panBy(this.#camera, dx, dy);
     this.#invalidate();
   }
 
   zoomAroundPixels(deltaY: number, offsetX: number, offsetY: number): void {
+    if (this.#timelapse) return;
     const next = zoomAround(this.#camera, this.#viewport, deltaY, offsetX, offsetY);
     if (next === this.#camera) return;
     this.#camera = next;
@@ -279,8 +649,22 @@ export class MapScene {
   }
 
   setView(center: { lon: number; lat: number }, zoom: number): void {
+    if (this.#timelapse) return;
     this.#camera = createCamera(center, zoom);
     this.#invalidate();
+  }
+
+  /** Centre and zoom the camera so a geographic box fills the view. */
+  fitBounds(bounds: { west: number; south: number; east: number; north: number }, maxZoom = MAX_ZOOM): void {
+    if (this.#timelapse) return;
+    const nw = lonLatToWorldPx({ lon: bounds.west, lat: bounds.north }, 0);
+    const se = lonLatToWorldPx({ lon: bounds.east, lat: bounds.south }, 0);
+    const spanX = Math.max(1e-9, se.px - nw.px);
+    const spanY = Math.max(1e-9, se.py - nw.py);
+    // Leave a margin so the place is not flush with the edges.
+    const fit = Math.log2(Math.min(this.#viewport.width / spanX, this.#viewport.height / spanY) * 0.85);
+    const zoom = Math.max(2, Math.min(maxZoom, fit));
+    this.setView({ lon: (bounds.west + bounds.east) / 2, lat: (bounds.north + bounds.south) / 2 }, zoom);
   }
 
   viewBounds(): { west: number; south: number; east: number; north: number } {
@@ -291,11 +675,20 @@ export class MapScene {
 
   inspectPixel(offsetX: number, offsetY: number): PixelInspection {
     const point = screenToLonLat(this.#camera, this.#viewport, offsetX, offsetY);
-    const scene = this.#scene;
+    const timelapse = this.#timelapse;
+    const scene = timelapse ? timelapse.frames[timelapse.index] : this.#scene;
     const empty = (status: PixelInspection['status']): PixelInspection => ({
       lon: point.lon, lat: point.lat, status, date: scene?.datetime ?? null,
       red: null, green: null, blue: null, nir: null, ndvi: null, qualityValid: null,
     });
+    if (timelapse) {
+      // The frame covers the viewport exactly, so the pixel is a proportion.
+      const resident = this.#drawnFrame == null ? undefined : timelapse.tiles.get(this.#drawnFrame);
+      if (!resident) return empty('loading');
+      const px = Math.max(0, Math.min(resident.width - 1, Math.floor((offsetX / this.#viewport.width) * resident.width)));
+      const py = Math.max(0, Math.min(resident.height - 1, Math.floor((offsetY / this.#viewport.height) * resident.height)));
+      return readPixel(resident, py * resident.width + px, point);
+    }
     if (!scene) return empty('outside');
     const z = tileZoom(this.#camera);
     const world = lonLatToWorldPx(point, z);
@@ -305,25 +698,7 @@ export class MapScene {
     if (!resident) return empty(covers(scene, z, x, y) ? 'loading' : 'outside');
     const px = Math.max(0, Math.min(resident.width - 1, Math.floor(world.px - x * TILE_SIZE)));
     const py = Math.max(0, Math.min(resident.height - 1, Math.floor(world.py - y * TILE_SIZE)));
-    const index = py * resident.width + px;
-    const tile = resident.source;
-    const value = (name: string): number | null => {
-      const band = tile.bands[name];
-      return band && Number.isFinite(band[index]) ? band[index] : null;
-    };
-    const red = value('red');
-    const nir = value('nir');
-    const quality = tile.masks.quality?.[index] === 1;
-    const result = computeNdvi(
-      red ?? Number.NaN, nir ?? Number.NaN,
-      tile.masks.red?.[index] === 1, tile.masks.nir?.[index] === 1, quality,
-      tile.header.calibration.ndviEpsilon,
-    );
-    return {
-      lon: point.lon, lat: point.lat, status: result.valid ? 'valid' : 'masked',
-      date: tile.header.sources.datetime, red, green: value('green'), blue: value('blue'), nir,
-      ndvi: result.valid ? result.value : null, qualityValid: quality,
-    };
+    return readPixel(resident, py * resident.width + px, point);
   }
 
   projectPoint(lon: number, lat: number): { x: number; y: number } {
@@ -353,6 +728,12 @@ export class MapScene {
 
   #invalidate(): void {
     this.#dirty = true;
+    // The basemap is DOM, not GPU: it must follow the camera even when WebGPU
+    // is unavailable and no frame is ever rendered.
+    if (this.#view.camera !== this.#camera || this.#view.viewport !== this.#viewport) {
+      this.#view = { camera: this.#camera, viewport: this.#viewport };
+      this.#emit();
+    }
   }
 
   #render(): void {
@@ -365,13 +746,32 @@ export class MapScene {
     // draw, so an idle map costs nothing. Tiles in flight keep the loop running
     // even when nothing has been invalidated, because each arrival is one more
     // step toward a complete view.
+    const timelapse = this.#timelapse;
+    if (timelapse) {
+      this.#renderTimelapse(renderer, timelapse);
+      return;
+    }
     if (!this.#dirty && this.#pending.size === 0) return;
     this.#dirty = false;
 
     if (scene) {
       const visible = visibleTiles(this.#camera, this.#viewport);
       const wanted = new Set<string>();
-      for (const item of visible) {
+      // Coarse preview first. One or two overview-level tiles cover the whole
+      // view, so something is on screen long before the ~20 detail tiles are.
+      // They are requested before any detail tile, which puts them at the
+      // front of the client's queue and warms the server's dataset handles.
+      const preview = previewTiles(scene, visible.map((item) => item.tile));
+      for (const tile of preview) {
+        wanted.add(tileKey(scene, tile.z, tile.x, tile.y));
+        this.#ensure(tile.z, tile.x, tile.y, scene, false);
+      }
+      // Until the first image of a scene is resident, detail requests would
+      // only compete with the preview for server slots. After that, the
+      // preview is just the first entry in each frame's queue.
+      const holdDetail = preview.some((tile) => this.#pending.has(tileKey(scene, tile.z, tile.x, tile.y)))
+        && !this.#hasResident(scene);
+      for (const item of holdDetail ? [] : visible) {
         if (covers(scene, item.tile.z, item.tile.x, item.tile.y)) {
           wanted.add(tileKey(scene, item.tile.z, item.tile.x, item.tile.y));
         }
@@ -396,6 +796,20 @@ export class MapScene {
         }
       }
       this.#abortUnwanted(wanted);
+
+      // What the finished view is made of: the preview plus the detail tiles.
+      // Parents are stand-ins, not part of the target.
+      const needed = preview.map((tile) => tileKey(scene, tile.z, tile.x, tile.y));
+      for (const item of visible) {
+        if (covers(scene, item.tile.z, item.tile.x, item.tile.y)) needed.push(tileKey(scene, item.tile.z, item.tile.x, item.tile.y));
+      }
+      this.#needTotal = needed.length;
+      // A tile that failed is settled too; counting it as outstanding would
+      // leave the bar short of full forever at a scene's edge.
+      this.#needDone = needed.filter((key) => this.#gpu.has(key) || this.#failed.has(key)).length;
+    } else {
+      this.#needTotal = 0;
+      this.#needDone = 0;
     }
 
     const started = performance.now();
@@ -403,20 +817,15 @@ export class MapScene {
       const tiles: DrawTile[] = scene
         ? visibleTiles(this.#camera, this.#viewport).map((item) => {
             const exact = tileKey(scene, item.tile.z, item.tile.x, item.tile.y);
-            const parent = parentTile(item.tile.z, item.tile.x, item.tile.y);
-            const useParent = !this.#gpu.has(exact) && parent
-              ? tileKey(scene, parent.z, parent.x, parent.y)
-              : null;
+            const fallback = this.#gpu.has(exact) ? null : this.#residentAncestor(scene, item.tile);
             return {
-              key: useParent && this.#gpu.has(useParent) ? useParent : exact,
+              key: fallback?.key ?? exact,
               screenX: item.screenX,
               screenY: item.screenY,
               // The quad still occupies the child's screen extent. Only its
-              // texture coordinates point into the retained parent.
+              // texture coordinates point into the retained ancestor.
               scale: 2 ** (this.#camera.zoom - item.tile.z),
-              uv: useParent && this.#gpu.has(useParent)
-                ? parentUv(item.tile.x, item.tile.y)
-                : undefined,
+              uv: fallback?.uv,
             };
           })
         : [];
@@ -437,7 +846,14 @@ export class MapScene {
     } else if (this.#gpu.has(key)) {
       return;
     }
-    if (this.#pending.has(key) || this.#failed.has(key)) return;
+    if (this.#pending.has(key)) return;
+    // A transient failure (cold upstream, dropped range read) must not leave a
+    // permanent hole, so non-404 failures become eligible again after a delay.
+    const retryAt = this.#failed.get(key);
+    if (retryAt !== undefined) {
+      if (performance.now() < retryAt) return;
+      this.#failed.delete(key);
+    }
     // Bounds are cheap and the alternative is a screen full of failed requests
     // for a scene that does not cover the view.
     if (!covers(scene, z, x, y)) return;
@@ -468,11 +884,17 @@ export class MapScene {
         // 404 is the normal answer for a tile outside the scene footprint.
         // Retrying it forever would pin the scene's edges as permanent errors.
         if (error instanceof RasterError && error.status === 404) {
-          this.#failed.add(key);
+          this.#failed.set(key, Infinity);
+          // One more frame, so the progress readout settles on the final count.
+          this.#invalidate();
           return;
         }
-        this.#failed.add(key);
-        this.#setStatus({ phase: 'error', message: `Tile request failed: ${describe(error)}` });
+        this.#failed.set(key, performance.now() + TILE_RETRY_MS);
+        // One tile is not the map: a page-level error would stop rendering
+        // every tile that did arrive. Report it in the HUD and retry later.
+        this.#lastTileError = `Tile request failed: ${describe(error)}`;
+        this.#publishStats();
+        setTimeout(() => this.#invalidate(), TILE_RETRY_MS);
       });
   }
 
@@ -505,6 +927,10 @@ export class MapScene {
     }
     if (isSecond) return;
     this.#gpu.set(primaryKey, renderer.upload(primaryKey, tile, analysis));
+    if (this.#firstImageMs === null) {
+      this.#firstImageMs = performance.now() - this.#sceneStartedAt;
+      console.info(`[TerraScope] first image in ${this.#firstImageMs.toFixed(0)} ms (tile z${z}/${x}/${y})`);
+    }
     this.#evict();
     this.#invalidate();
   }
@@ -556,6 +982,30 @@ export class MapScene {
     return tile;
   }
 
+  /** Is any tile of this scene on the GPU? */
+  #hasResident(scene: Scene): boolean {
+    const prefix = `${scene.collection}/${scene.id}/`;
+    for (const key of this.#gpu.keys()) if (key.startsWith(prefix)) return true;
+    return false;
+  }
+
+  /**
+   * The nearest resident ancestor of a tile, and the part of it the tile covers.
+   *
+   * Nearest first, so the sharpest available stand-in is drawn: the parent
+   * once it arrives, the coarse preview before that.
+   */
+  #residentAncestor(
+    scene: Scene,
+    tile: { z: number; x: number; y: number },
+  ): { key: string; uv: readonly [number, number, number, number] } | null {
+    for (let depth = 1; tile.z - depth >= COARSEST_ZOOM; depth += 1) {
+      const key = tileKey(scene, tile.z - depth, tile.x >> depth, tile.y >> depth);
+      if (this.#gpu.has(key)) return { key, uv: ancestorUv(tile.x, tile.y, depth) };
+    }
+    return null;
+  }
+
   /** Cancel queued and active work that can no longer contribute to the view. */
   #abortUnwanted(wanted: ReadonlySet<string>): void {
     for (const [key, controller] of this.#pending) {
@@ -578,6 +1028,7 @@ export class MapScene {
       resident: this.#gpu.size,
       pending: this.#pending.size,
       failed: this.#failed.size,
+      lastTileError: this.#failed.size > 0 ? this.#lastTileError : null,
       bytes: this.#gpu.size * BYTES_PER_TILE_ESTIMATE,
       zoom: this.#camera.zoom,
       centre: this.#camera.center,
@@ -586,6 +1037,10 @@ export class MapScene {
       downloadedBytes: this.client.metrics.downloadedBytes,
       decodeMs: this.client.metrics.decodeMs,
       cacheHits: this.client.metrics.edgeHits + this.client.metrics.r2Hits,
+      firstImageMs: this.#firstImageMs,
+      neededTiles: this.#needTotal,
+      neededDone: this.#needDone,
+      inFlight: this.client.progress,
     };
     this.#emit();
   }
@@ -601,7 +1056,12 @@ export class MapScene {
 }
 
 const MAX_RESIDENT_TILES = 48;
+/** Coarsest zoom the ordinary parent fallback uses. */
 const MIN_PARENT_ZOOM = 8;
+/** Coarsest zoom the raster service serves (its MIN_ZOOM); nothing below it exists. */
+const COARSEST_ZOOM = 8;
+/** Levels between the view and its preview tiles. */
+const PREVIEW_ZOOM_DROP = 3;
 const BYTES_PER_TILE_ESTIMATE = 256 * 256 * 40;
 
 function emptyStats(): MapStats {
@@ -609,6 +1069,7 @@ function emptyStats(): MapStats {
     resident: 0,
     pending: 0,
     failed: 0,
+    lastTileError: null,
     bytes: 0,
     zoom: 0,
     centre: { lon: 0, lat: 0 },
@@ -617,6 +1078,156 @@ function emptyStats(): MapStats {
     downloadedBytes: 0,
     decodeMs: 0,
     cacheHits: 0,
+    firstImageMs: null,
+    neededTiles: 0,
+    neededDone: 0,
+    inFlight: IDLE_PROGRESS,
+  };
+}
+
+export const IDLE_PROGRESS: RequestProgress = {
+  queued: 0, waiting: 0, downloading: 0, loadedBytes: 0, totalBytes: 0, oldestMs: null,
+};
+
+// ---- timelapse types and helpers -----------------------------------------
+
+export interface MapView {
+  camera: CameraState;
+  viewport: Viewport;
+}
+
+export type FrameStatus = 'idle' | 'loading' | 'ready' | 'failed';
+
+/** Immutable snapshot for React. Replaced, never mutated, on every change. */
+export interface TimelapseState {
+  active: boolean;
+  frames: readonly Scene[];
+  status: readonly FrameStatus[];
+  /** Per frame: removed from playback, by the user or the cloud rule. */
+  excluded: readonly boolean[];
+  /** Per frame: fraction of the view that is cloud, shadow or cirrus; null until loaded. */
+  viewCloud: readonly (number | null)[];
+  /** Per frame: removed by the cloud rule. */
+  autoRemoved: readonly boolean[];
+  /** Cloud rule threshold (fraction of the view), or null when off. */
+  autoCloud: number | null;
+  index: number;
+  playing: boolean;
+  /** Playback is waiting for the next frame to arrive. */
+  buffering: boolean;
+  fps: number;
+  loop: boolean;
+  frameSize: { width: number; height: number } | null;
+}
+
+export const IDLE_TIMELAPSE: TimelapseState = {
+  active: false, frames: [], status: [], excluded: [], viewCloud: [], autoRemoved: [], autoCloud: null, index: 0, playing: false, buffering: false, fps: 4, loop: true, frameSize: null,
+};
+
+interface TimelapseSession {
+  frames: FrameScene[];
+  status: FrameStatus[];
+  /** Dates removed from playback, by the user or by the cloud rule. */
+  excluded: boolean[];
+  /** Fraction of the view under cloud, cloud shadow or cirrus; null until loaded. */
+  viewCloud: Array<number | null>;
+  /** Removed by the cloud rule rather than by the user. */
+  autoRemoved: boolean[];
+  /** The user toggled this date: the cloud rule leaves it alone from then on. */
+  manual: boolean[];
+  /** The user has played, scrubbed or stepped; from then on the position is theirs. */
+  userSeeked: boolean;
+  plan: FramePlan;
+  order: number[];
+  /** GPU resources per frame index. Separate from the tile LRU: never evicted mid-play. */
+  tiles: Map<number, RenderTile>;
+  loading: Set<number>;
+  controller: AbortController;
+  index: number;
+  playing: boolean;
+  fps: number;
+  loop: boolean;
+  buffering: boolean;
+  lastStep: number;
+}
+
+/**
+ * Frames fetched at once after the first. Two, not six: on a
+ * bandwidth-limited link more parallel frames only makes each one later,
+ * and playback needs them in order.
+ */
+const FRAME_CONCURRENCY = 2;
+
+/**
+ * Default cloud rule: drop frames with more than 30% of the view under cloud.
+ * Loose enough to keep a few scattered clouds, strict enough to drop the
+ * overcast and hazy days that make a timelapse flicker.
+ */
+const DEFAULT_AUTO_CLOUD = 0.3;
+
+/**
+ * Fraction of the frame's covered pixels that are cloud, cloud shadow or
+ * cirrus, from its `clear` mask. Null when the frame has none (quality
+ * masking off) or covers nothing.
+ */
+function viewCloudFraction(tile: NumericTile): number | null {
+  const clear = tile.masks['clear'];
+  const covered = tile.masks['coverage:red'];
+  if (!clear || !covered) return null;
+  let total = 0;
+  let cloudy = 0;
+  for (let i = 0; i < covered.length; i += 1) {
+    if (covered[i] !== 1) continue;
+    total += 1;
+    if (clear[i] !== 1) cloudy += 1;
+  }
+  return total > 0 ? cloudy / total : null;
+}
+
+/** Nearest loaded frame still in the timeline, looking forward first. */
+function nearestKept(timelapse: TimelapseSession, index: number): number | null {
+  for (let d = 1; d < timelapse.frames.length; d += 1) {
+    for (const i of [index + d, index - d]) {
+      if (i >= 0 && i < timelapse.frames.length && timelapse.status[i] === 'ready' && !timelapse.excluded[i]) return i;
+    }
+  }
+  return null;
+}
+
+function frameKey(index: number): string {
+  return `frame:${index}`;
+}
+
+function frameIndex(key: string): number {
+  return Number(key.slice('frame:'.length));
+}
+
+/** The requested frame if loaded, else the nearest loaded one before it, else after. */
+function nearestReady(status: readonly FrameStatus[], index: number): number | null {
+  for (let i = index; i >= 0; i -= 1) if (status[i] === 'ready') return i;
+  for (let i = index + 1; i < status.length; i += 1) if (status[i] === 'ready') return i;
+  return null;
+}
+
+/** Values and NDVI at one sample of a resident tile or frame. */
+function readPixel(resident: RenderTile, index: number, point: { lon: number; lat: number }): PixelInspection {
+  const tile = resident.source;
+  const value = (name: string): number | null => {
+    const band = tile.bands[name];
+    return band && Number.isFinite(band[index]) ? band[index] : null;
+  };
+  const red = value('red');
+  const nir = value('nir');
+  const quality = tile.masks.quality?.[index] === 1;
+  const result = computeNdvi(
+    red ?? Number.NaN, nir ?? Number.NaN,
+    tile.masks.red?.[index] === 1, tile.masks.nir?.[index] === 1, quality,
+    tile.header.calibration.ndviEpsilon,
+  );
+  return {
+    lon: point.lon, lat: point.lat, status: result.valid ? 'valid' : 'masked',
+    date: tile.header.sources.datetime, red, green: value('green'), blue: value('blue'), nir,
+    ndvi: result.valid ? result.value : null, qualityValid: quality,
   };
 }
 
@@ -629,10 +1240,33 @@ function parentTile(z: number, x: number, y: number): { z: number; x: number; y:
   return { z: z - 1, x: x >> 1, y: y >> 1 };
 }
 
-function parentUv(x: number, y: number): readonly [number, number, number, number] {
-  const u0 = (x & 1) * 0.5;
-  const v0 = (y & 1) * 0.5;
-  return [u0, v0, u0 + 0.5, v0 + 0.5];
+/** The sub-rectangle of an ancestor `depth` levels up that a tile covers. */
+function ancestorUv(x: number, y: number, depth: number): readonly [number, number, number, number] {
+  const n = 2 ** depth;
+  const size = 1 / n;
+  const u0 = (x % n) * size;
+  const v0 = (y % n) * size;
+  return [u0, v0, u0 + size, v0 + size];
+}
+
+/**
+ * Coarse tiles covering the view, `PREVIEW_ZOOM_DROP` levels above it.
+ *
+ * Eight times coarser means one tile spans what ~64 detail tiles do, and the
+ * server reads it from the COG overviews rather than full-resolution blocks.
+ * Empty when the view is already at or near the coarsest served zoom.
+ */
+function previewTiles(scene: Scene, visible: Array<{ z: number; x: number; y: number }>): Array<{ z: number; x: number; y: number }> {
+  const out = new Map<string, { z: number; x: number; y: number }>();
+  for (const tile of visible) {
+    const z = Math.max(COARSEST_ZOOM, tile.z - PREVIEW_ZOOM_DROP);
+    // At z-1 the ordinary parent fetch already covers this.
+    if (tile.z - z < 2) continue;
+    const depth = tile.z - z;
+    const preview = { z, x: tile.x >> depth, y: tile.y >> depth };
+    if (covers(scene, preview.z, preview.x, preview.y)) out.set(`${z}/${preview.x}/${preview.y}`, preview);
+  }
+  return [...out.values()];
 }
 
 /**
@@ -651,7 +1285,9 @@ function covers(scene: Scene, z: number, x: number, y: number): boolean {
   const east = ((x + 1) / n) * 360 - 180;
   const north = tileToLat(y, n);
   const south = tileToLat(y + 1, n);
-  return east >= minLon && west <= maxLon && south >= minLat && north <= maxLat;
+  // Overlap on both axes. Latitude used to test containment instead, which
+  // rejected every tile taller than the scene -- all coarse preview tiles.
+  return east >= minLon && west <= maxLon && north >= minLat && south <= maxLat;
 }
 
 function tileToLat(y: number, n: number): number {

@@ -8,6 +8,8 @@ the ability to reproduce and to cite the number.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from app.protocol.eot1 import PROCESSING_VERSION, BandSpec, Eot1Tile, MaskSpec
@@ -17,7 +19,7 @@ from app.providers.sentinel2 import (
     SourceScene,
 )
 from app.tiles.analysis import NDVI_EPSILON
-from app.tiles.window import DisplayTileGrid, ground_resolution_m, read_bands
+from app.tiles.window import Grid, read_bands
 
 ATTRIBUTION = (
     "Contains modified Copernicus Sentinel data 2024, processed by Element 84 "
@@ -27,11 +29,13 @@ ATTRIBUTION = (
 
 def build_tile(
     scene: SourceScene,
-    grid: DisplayTileGrid,
+    grid: Grid,
     band_names: list[str],
     *,
     apply_quality_mask: bool = True,
     pool: object | None = None,
+    overview_oversampling: float | None = None,
+    include_clear_mask: bool = False,
 ) -> Eot1Tile:
     """Read, calibrate, mask and serialise-prepare one display tile."""
     data = read_bands(
@@ -40,6 +44,7 @@ def build_tile(
         band_names,
         apply_quality_mask=apply_quality_mask,
         pool=pool,  # type: ignore[arg-type]
+        overview_oversampling=overview_oversampling,
     )
     bands: dict[str, np.ndarray] = data["bands"]
     coverage: dict[str, np.ndarray] = data["coverage"]
@@ -47,8 +52,8 @@ def build_tile(
     quality: np.ndarray = data["quality"]
 
     tile = Eot1Tile(
-        width=grid.size,
-        height=grid.size,
+        width=grid.width,
+        height=grid.height,
         grid=grid.to_dict(),
         bounds=grid.bounds_wgs84(),
         calibrated=True,
@@ -61,9 +66,11 @@ def build_tile(
             "epsg": scene.epsg,
             "sourceResolutionM": {n: scene.bands[n].gsd for n in band_names if n in scene.bands},
             "resampling": {n: "bilinear" for n in band_names},
-            "outputResolutionM": ground_resolution_m(
-                (grid.bounds_wgs84()[1] + grid.bounds_wgs84()[3]) / 2.0, grid.z
-            ),
+            # Mercator metres per pixel shrink by cos(latitude) on the ground.
+            # Equal to ground_resolution_m(lat, z) for a tile, and defined for
+            # a frame, which has no zoom.
+            "outputResolutionM": grid.resolution_m
+            * math.cos(math.radians((grid.bounds_wgs84()[1] + grid.bounds_wgs84()[3]) / 2.0)),
         },
         calibration={
             "applied": True,
@@ -98,9 +105,17 @@ def build_tile(
         tile.masks.append(MaskSpec(f"coverage:{name}", coverage[name].astype(np.uint8)))
         tile.masks.append(MaskSpec(name, analysis[name].astype(np.uint8)))
     tile.masks.append(MaskSpec("quality", quality.astype(np.uint8)))
+    # Frames only: lets the client measure how cloudy *its view* is, which the
+    # catalog's granule-wide cloud cover cannot say.
+    if include_clear_mask and data.get("clear") is not None:
+        tile.masks.append(MaskSpec("clear", data["clear"].astype(np.uint8)))
 
     tile.sources["qualityPolicy"] = (
         DEFAULT_QUALITY_POLICY if apply_quality_mask else "no quality mask applied"
     )
     tile.sources["reflectancePolicy"] = REFLECTANCE_POLICY
+    if overview_oversampling is not None:
+        # Provenance: this product may come from an overview up to this factor
+        # coarser than its output pixel, and says so.
+        tile.sources["overviewOversampling"] = overview_oversampling
     return tile

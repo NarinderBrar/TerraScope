@@ -36,6 +36,19 @@ export interface TileDescriptor {
   qualityMask?: boolean;
 }
 
+export interface FrameDescriptor {
+  collection: string;
+  itemId: string;
+  profile: string;
+  /** [left, bottom, right, top] in EPSG:3857 metres. */
+  bounds3857: readonly [number, number, number, number];
+  width: number;
+  height: number;
+  qualityMask?: boolean;
+  /** Same-pass granules that fill whatever part of the view `itemId` misses. */
+  mosaic?: readonly string[];
+}
+
 export class RasterError extends Error {
   override readonly name = 'RasterError';
   constructor(
@@ -60,10 +73,34 @@ export interface RasterMetrics {
   misses: number;
 }
 
+/** Snapshot of tile requests in flight, for the progress bar. */
+export interface RequestProgress {
+  /** Waiting for a client concurrency slot; nothing sent yet. */
+  queued: number;
+  /** Sent, no response headers yet: the server is building the tile. */
+  waiting: number;
+  /** Headers received, body streaming. */
+  downloading: number;
+  /** Body bytes received so far, across downloading requests. */
+  loadedBytes: number;
+  /** Declared body size across downloading requests (Content-Length). */
+  totalBytes: number;
+  /** Age of the oldest sent request, in ms, or null when none is active. */
+  oldestMs: number | null;
+}
+
+interface ActiveRequest {
+  startedAt: number;
+  phase: 'waiting' | 'downloading';
+  loaded: number;
+  total: number;
+}
+
 export class RasterClient {
   readonly baseUrl: string;
 
   #inFlight = new Map<string, Promise<NumericTile>>();
+  #activeRequests = new Map<string, ActiveRequest>();
   #active = 0;
   #queue: Array<() => void> = [];
   #maxConcurrent: number;
@@ -85,6 +122,24 @@ export class RasterClient {
 
   get metrics(): Readonly<RasterMetrics> {
     return { ...this.#metrics };
+  }
+
+  get progress(): RequestProgress {
+    const now = performance.now();
+    const result: RequestProgress = {
+      queued: this.#queue.length, waiting: 0, downloading: 0, loadedBytes: 0, totalBytes: 0, oldestMs: null,
+    };
+    for (const request of this.#activeRequests.values()) {
+      if (request.phase === 'waiting') result.waiting += 1;
+      else {
+        result.downloading += 1;
+        result.loadedBytes += request.loaded;
+        result.totalBytes += request.total;
+      }
+      const age = now - request.startedAt;
+      if (result.oldestMs === null || age > result.oldestMs) result.oldestMs = age;
+    }
+    return result;
   }
 
   async health(signal?: AbortSignal): Promise<HealthResponse> {
@@ -136,10 +191,40 @@ export class RasterClient {
    */
   async tile(descriptor: TileDescriptor, options: RequestOptions = {}): Promise<NumericTile> {
     const key = `${descriptor.collection}/${descriptor.itemId}/${descriptor.profile}/${descriptor.z}/${descriptor.x}/${descriptor.y}/${descriptor.qualityMask === false ? 'raw' : 'masked'}`;
+    const url =
+      `${this.baseUrl}/api/tiles/${encodeURIComponent(descriptor.collection)}` +
+      `/${encodeURIComponent(descriptor.itemId)}` +
+      `/${descriptor.z}/${descriptor.x}/${descriptor.y}` +
+      `?profile=${encodeURIComponent(descriptor.profile)}` +
+      `&qualityMask=${descriptor.qualityMask === false ? 'false' : 'true'}`;
+    return this.#request(key, url, options.signal);
+  }
+
+  /**
+   * Fetch one timelapse frame: a whole locked view for one date, processed
+   * exactly like a tile. Shares the tile queue, concurrency cap and progress
+   * reporting, so the loading bars cover frames too.
+   */
+  async frame(descriptor: FrameDescriptor, options: RequestOptions = {}): Promise<NumericTile> {
+    const [left, bottom, right, top] = descriptor.bounds3857;
+    const bbox = [left, bottom, right, top].map((v) => v.toFixed(2)).join(',');
+    const quality = descriptor.qualityMask === false ? 'false' : 'true';
+    const mosaic = (descriptor.mosaic ?? []).join(',');
+    const key = `frame/${descriptor.collection}/${descriptor.itemId}+${mosaic}/${descriptor.profile}/${bbox}/${descriptor.width}x${descriptor.height}/${quality}`;
+    const url =
+      `${this.baseUrl}/api/frames/${encodeURIComponent(descriptor.collection)}` +
+      `/${encodeURIComponent(descriptor.itemId)}` +
+      `?bbox=${bbox}&width=${descriptor.width}&height=${descriptor.height}` +
+      `&profile=${encodeURIComponent(descriptor.profile)}&qualityMask=${quality}` +
+      (mosaic ? `&mosaic=${encodeURIComponent(mosaic)}` : '');
+    return this.#request(key, url, options.signal);
+  }
+
+  #request(key: string, url: string, signal: AbortSignal | undefined): Promise<NumericTile> {
     const existing = this.#inFlight.get(key);
     if (existing) return existing;
 
-    const promise = this.#schedule(key, options.signal);
+    const promise = this.#schedule(key, url, signal);
     this.#inFlight.set(key, promise);
     // Clear the entry on settle, but only if it is still ours: a later request
     // for the same key must not be evicted by an earlier one's cleanup.
@@ -149,8 +234,7 @@ export class RasterClient {
     return promise;
   }
 
-  #schedule(key: string, signal: AbortSignal | undefined): Promise<NumericTile> {
-    const descriptor = descriptorFromKey(key);
+  #schedule(key: string, url: string, signal: AbortSignal | undefined): Promise<NumericTile> {
     return new Promise<NumericTile>((resolve, reject) => {
       let queued = false;
       const abortQueued = (): void => {
@@ -168,15 +252,10 @@ export class RasterClient {
           return;
         }
         this.#active += 1;
+        const progress: ActiveRequest = { startedAt: performance.now(), phase: 'waiting', loaded: 0, total: 0 };
+        this.#activeRequests.set(key, progress);
         try {
-          const response = await fetch(
-            `${this.baseUrl}/api/tiles/${encodeURIComponent(descriptor.collection)}` +
-              `/${encodeURIComponent(descriptor.itemId)}` +
-              `/${descriptor.z}/${descriptor.x}/${descriptor.y}` +
-              `?profile=${encodeURIComponent(descriptor.profile)}` +
-              `&qualityMask=${descriptor.qualityMask === false ? 'false' : 'true'}`,
-            { headers: { accept: 'application/x-eot1' }, signal },
-          );
+          const response = await fetch(url, { headers: { accept: 'application/x-eot1' }, signal });
           if (!response.ok) {
             throw new RasterError(
               `tile request failed with ${response.status}`,
@@ -189,14 +268,10 @@ export class RasterClient {
           if (cache === 'edge') this.#metrics.edgeHits += 1;
           else if (cache === 'r2') this.#metrics.r2Hits += 1;
           else this.#metrics.misses += 1;
-          const buffer = await response.arrayBuffer();
+          progress.phase = 'downloading';
+          progress.total = Number(response.headers.get('content-length')) || 0;
+          const buffer = await readBody(response, progress);
           this.#metrics.downloadedBytes += buffer.byteLength;
-          if (buffer.byteLength > MAX_TILE_BYTES) {
-            throw new RasterError(
-              `tile is ${buffer.byteLength}B, over the ${MAX_TILE_BYTES}B cap`,
-              502,
-            );
-          }
           const decodeStarted = performance.now();
           const decoded = decode(buffer);
           this.#metrics.decodeMs += performance.now() - decodeStarted;
@@ -204,6 +279,7 @@ export class RasterClient {
         } catch (error) {
           reject(error);
         } finally {
+          this.#activeRequests.delete(key);
           this.#active -= 1;
           const next = this.#queue.shift();
           next?.();
@@ -251,15 +327,39 @@ export class RasterClient {
   }
 }
 
-function descriptorFromKey(key: string): TileDescriptor {
-  const [collection, itemId, profile, zs, xs, ys, quality] = key.split('/');
-  return {
-    collection,
-    itemId,
-    profile,
-    z: Number(zs),
-    x: Number(xs),
-    y: Number(ys),
-    qualityMask: quality !== 'raw',
-  };
+/**
+ * Read a tile body chunk by chunk, so received bytes can be reported while it
+ * streams. The size cap is enforced as bytes arrive rather than after the
+ * whole body has been buffered.
+ */
+async function readBody(response: Response, progress: ActiveRequest): Promise<ArrayBuffer> {
+  if (!response.body) {
+    const buffer = await response.arrayBuffer();
+    progress.loaded = buffer.byteLength;
+    if (buffer.byteLength > MAX_TILE_BYTES) throw oversize(buffer.byteLength);
+    return buffer;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    progress.loaded += value.byteLength;
+    if (progress.loaded > MAX_TILE_BYTES) {
+      await reader.cancel();
+      throw oversize(progress.loaded);
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(progress.loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out.buffer;
+}
+
+function oversize(bytes: number): RasterError {
+  return new RasterError(`tile is ${bytes}B, over the ${MAX_TILE_BYTES}B cap`, 502);
 }

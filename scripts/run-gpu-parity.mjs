@@ -70,6 +70,9 @@ class Cdp {
     this.#ws = ws;
     ws.addEventListener('message', (event) => {
       const message = JSON.parse(event.data);
+      if (message.method === 'Runtime.consoleAPICalled') {
+        console.log('[BROWSER]', ...message.params.args.map(a => a.value ?? a.description));
+      }
       const entry = this.#pending.get(message.id);
       if (!entry) return;
       this.#pending.delete(message.id);
@@ -230,7 +233,10 @@ try {
   for (const check of result.checks ?? []) {
     console.log(`  ${check.pass ? 'ok  ' : 'FAIL'} ${check.name}${check.detail ? `  [${check.detail}]` : ''}`);
   }
-  if (result.error) console.log(`\nerror: ${result.error}`);
+  if (result.error) {
+    console.log(`\nerror: ${result.error}`);
+    if (chromeStderr.trim()) console.error(`\nchrome stderr:\n${chromeStderr.trim()}`);
+  }
   console.log('');
   console.log(
     result.pass

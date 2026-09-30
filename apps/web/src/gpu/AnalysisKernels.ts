@@ -301,7 +301,7 @@ export class NdviGpu {
         { binding: 0, resource: { buffer: uniforms } },
         { binding: 1, resource: { buffer: tile.bands.buffer } },
         { binding: 2, resource: { buffer: tile.masks.buffer } },
-        { binding: 3, resource: { buffer: withSecond && tile.second ? tile.second.buffer : empty } },
+        { binding: 3, resource: { buffer: withSecond && tile.second ? tile.second.buffer : tile.bands.buffer } },
         { binding: 4, resource: { buffer: tile.ndvi.buffer } },
         { binding: 5, resource: { buffer: tile.ndviValid.buffer } },
         { binding: 6, resource: { buffer: tile.delta.buffer } },

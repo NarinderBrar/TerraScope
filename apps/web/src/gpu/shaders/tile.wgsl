@@ -202,7 +202,12 @@ fn shade(uv: vec2<f32>, layer: u32, useSecond: bool) -> vec3<f32> {
       if (!coverageBit(pixel)) {
         return NO_DATA;
       }
-      let bands = select(textureLoad(source_a, coord, 0), textureLoad(source_b, coord, 0), useSecond);
+      var bands: vec4<f32>;
+      if (useSecond) {
+        bands = textureLoad(source_b, coord, 0);
+      } else {
+        bands = textureLoad(source_a, coord, 0);
+      }
       return vec3<f32>(displayEncode(bands.x), displayEncode(bands.y), displayEncode(bands.z));
     }
     // False colour: NIR as red, so vegetation reads red. The plan calls for
@@ -212,17 +217,29 @@ fn shade(uv: vec2<f32>, layer: u32, useSecond: bool) -> vec3<f32> {
       if (!coverageBit(pixel)) {
         return NO_DATA;
       }
-      let bands = select(textureLoad(source_a, coord, 0), textureLoad(source_b, coord, 0), useSecond);
+      var bands: vec4<f32>;
+      if (useSecond) {
+        bands = textureLoad(source_b, coord, 0);
+      } else {
+        bands = textureLoad(source_a, coord, 0);
+      }
       return vec3<f32>(displayEncode(bands.w), displayEncode(bands.x), displayEncode(bands.y));
     }
     // NDVI. Each date is drawn from its own validity mask, so a pixel that is
     // only observable in A does not inherit B's index.
     case 1u: {
-      let valid = select(indexValidBitA(pixel), indexValidBitB(pixel), useSecond);
+      var valid: bool;
+      var value: f32;
+      if (useSecond) {
+        valid = indexValidBitB(pixel);
+        value = ndvi_b[pixel];
+      } else {
+        valid = indexValidBitA(pixel);
+        value = ndvi_a[pixel];
+      }
       if (!valid) {
         return NO_DATA;
       }
-      let value = select(ndvi_a[pixel], ndvi_b[pixel], useSecond);
       return ndviRamp((value - params.ndvi_min) / max(0.01, params.ndvi_max - params.ndvi_min));
     }
     // Single band.
@@ -230,7 +247,12 @@ fn shade(uv: vec2<f32>, layer: u32, useSecond: bool) -> vec3<f32> {
       if (!coverageBit(pixel)) {
         return NO_DATA;
       }
-      let bands = select(textureLoad(source_a, coord, 0), textureLoad(source_b, coord, 0), useSecond);
+      var bands: vec4<f32>;
+      if (useSecond) {
+        bands = textureLoad(source_b, coord, 0);
+      } else {
+        bands = textureLoad(source_a, coord, 0);
+      }
       return vec3<f32>(displayEncode(channel(bands, params.band_index) * 0.5));
     }
   }
@@ -242,6 +264,9 @@ fn shade(uv: vec2<f32>, layer: u32, useSecond: bool) -> vec3<f32> {
 /// change precisely where the observation is least trustworthy, so a gap shows
 /// as no-data rather than as a colour.
 fn difference(uv: vec2<f32>) -> vec3<f32> {
+  if (params.has_second == 0u) {
+    return NO_DATA;
+  }
   let dim = vec2<f32>(textureDimensions(source_a, 0));
   let coord = vec2<u32>(clamp(uv * dim, vec2<f32>(0.0), dim - vec2<f32>(1.0)));
   let pixel = coord.y * u32(dim.x) + coord.x;

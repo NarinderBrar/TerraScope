@@ -146,7 +146,10 @@ class StacClient:
         end: str,
         max_cloud_cover: float | None = None,
         limit: int = 20,
+        direction: str = "desc",
     ) -> dict[str, Any]:
+        if direction not in ("asc", "desc"):
+            raise StacError(f"sort direction {direction!r} must be 'asc' or 'desc'", status=400)
         body: dict[str, Any] = {
             "collections": list(collections),
             "bbox": list(bbox),
@@ -156,7 +159,7 @@ class StacClient:
             # timestamp still means exactly that instant.
             "datetime": f"{to_rfc3339(start, end_of_day=False)}/{to_rfc3339(end, end_of_day=True)}",
             "limit": max(1, min(int(limit), MAX_ITEMS_PER_PAGE)),
-            "sortby": [{"field": "properties.datetime", "direction": "desc"}],
+            "sortby": [{"field": "properties.datetime", "direction": direction}],
         }
         if max_cloud_cover is not None:
             body["query"] = {"eo:cloud_cover": {"lte": float(max_cloud_cover)}}
@@ -179,6 +182,27 @@ class StacClient:
         if resp.status_code >= 400:
             raise StacError(f"catalog returned {resp.status_code}", status=502)
         return resp.json()
+
+    def remember(self, collection: str, item: dict[str, Any]) -> None:
+        """Keep an item a search already returned.
+
+        A search response carries complete items. Caching them means the first
+        tile or frame of a scene the user just found does not pay another
+        catalog round trip (0.4-1.1 s measured) to fetch the same JSON again.
+        """
+        item_id = item.get("id")
+        if not isinstance(item_id, str):
+            return
+        try:
+            validate_id(collection, max_len=64)
+            validate_id(item_id)
+        except StacError:
+            return
+        key = f"{collection}/{item_id}"
+        self._items[key] = item
+        self._items.move_to_end(key)
+        while len(self._items) > self.cache_size:
+            self._items.popitem(last=False)
 
     def get_item(self, collection: str, item_id: str) -> dict[str, Any]:
         validate_id(collection, max_len=64)

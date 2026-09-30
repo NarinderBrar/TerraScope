@@ -41,6 +41,11 @@ SCL_CLASSES: dict[int, str] = {
 #: Policy: everything a spectral index would be meaningless or misleading over is
 #: excluded. Surfaced verbatim in the UI so the mask is never implicit.
 DEFAULT_EXCLUDED_SCL: frozenset[int] = frozenset({0, 1, 2, 3, 8, 9, 10, 11})
+#: The subset of excluded classes that is atmosphere rather than ground:
+#: cloud shadow, medium and high probability cloud, thin cirrus. Dark areas,
+#: snow and no-data are excluded from analysis too, but they are not "cloudy",
+#: and counting them would call a shadowed valley or a snowfield overcast.
+CLOUD_SCL: frozenset[int] = frozenset({3, 8, 9, 10})
 
 DEFAULT_QUALITY_POLICY = (
     "Scene classification (SCL) masking. Excluded classes: no data (0), "

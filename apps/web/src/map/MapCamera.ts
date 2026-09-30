@@ -35,12 +35,17 @@ export interface CameraState {
 }
 
 export const MIN_ZOOM = 2;
-export const MAX_ZOOM = 19;
+/**
+ * Sentinel-2's finest bands are 10 m. At z14 a screen pixel is ~9.5 m at the
+ * equator and ~7.5 m at mid-latitudes, so one sensor pixel is about one screen
+ * pixel. Past it, zooming only enlarges the same pixels.
+ */
+export const MAX_ZOOM = 14;
 export const MIN_LATITUDE = -MAX_LATITUDE;
 export const MAX_LATITUDE_CLAMP = MAX_LATITUDE;
 
 export function createCamera(center: LonLat = { lon: -121.3, lat: 38.1 }, zoom = 11): CameraState {
-  return { center, zoom, minZoom: MIN_ZOOM, maxZoom: MAX_ZOOM };
+  return { center, zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)), minZoom: MIN_ZOOM, maxZoom: MAX_ZOOM };
 }
 
 export function clampCamera(state: CameraState): CameraState {

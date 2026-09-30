@@ -51,6 +51,11 @@ export interface DrawTile {
   scale: number;
   /** Texture subsection used when a coarse parent stands in for this tile. */
   uv?: readonly [number, number, number, number];
+  /**
+   * Explicit on-screen size in CSS pixels, for a quad that is not a square
+   * tile (a timelapse frame covering the viewport). Overrides `scale`.
+   */
+  size?: { width: number; height: number };
 }
 
 /** GPU resources for one resident tile. */
@@ -329,13 +334,12 @@ export class RasterRenderer {
         // at A before then keeps a single bind group layout.
         { binding: 2, resource: (b && tile.viewB) || tile.view },
         { binding: 3, resource: { buffer: tile.coverage } },
-        // 4 and 5 are A's and B's *index* validity. Using A's for both would
-        // make B's masked pixels draw as no-data with A's value, which is the
-        // same class of bug as the coverage/index split this design exists for.
+        // 4 and 5 are A's and B's *index* validity. When B is absent, pointing
+        // at A ensures the buffer is full-sized (preventing OOB driver crashes).
         { binding: 4, resource: { buffer: a.ndviValid.buffer } },
-        { binding: 5, resource: { buffer: (b && b.ndviValid.buffer) || this.#emptyBuffer } },
+        { binding: 5, resource: { buffer: (b && b.ndviValid.buffer) || a.ndviValid.buffer } },
         { binding: 6, resource: { buffer: a.ndvi.buffer } },
-        { binding: 7, resource: { buffer: (b && b.ndvi.buffer) || this.#emptyBuffer } },
+        { binding: 7, resource: { buffer: (b && b.ndvi.buffer) || a.ndvi.buffer } },
       ],
     });
   }
@@ -386,12 +390,13 @@ export class RasterRenderer {
       // where in the world the camera is.
       const originX = (item.screenX - viewport.width / 2) * dpr;
       const originY = (item.screenY - viewport.height / 2) * dpr;
-      const extent = TILE_SIZE * item.scale * dpr;
+      const extentX = (item.size ? item.size.width : TILE_SIZE * item.scale) * dpr;
+      const extentY = (item.size ? item.size.height : TILE_SIZE * item.scale) * dpr;
       const firstVertex = cursor / FLOATS_PER_VERTEX;
       const [u0, v0, u1, v1] = item.uv ?? [0, 0, 1, 1];
       for (const [u, v] of QUAD) {
-        scratch[cursor++] = originX + u * extent;
-        scratch[cursor++] = originY + v * extent;
+        scratch[cursor++] = originX + u * extentX;
+        scratch[cursor++] = originY + v * extentY;
         scratch[cursor++] = u0 + u * (u1 - u0);
         scratch[cursor++] = v0 + v * (v1 - v0);
       }
@@ -403,14 +408,25 @@ export class RasterRenderer {
       });
     }
 
+    let vertexBuffer: GPUBuffer | null = null;
+    if (draws.length > 0) {
+      vertexBuffer = this.#ensureVertexBuffer(scratch.byteLength);
+      device.queue.writeBuffer(vertexBuffer, 0, asSource(scratch), 0, cursor);
+    }
+
+    let surfaceView: GPUTextureView;
+    try {
+      surfaceView = this.context.surface;
+    } catch {
+      return { drawn: 0, missing };
+    }
+
     const encoder = device.createCommandEncoder({ label: 'tiles' });
     const pass = encoder.beginRenderPass({
       label: 'tiles-pass',
       colorAttachments: [
         {
-          view: this.context.surface,
-          // Matches the shader's NO_DATA colour, so a gap and a masked pixel are
-          // the same shade rather than two different "empty" colours.
+          view: surfaceView,
           clearValue: { r: 0.08, g: 0.09, b: 0.1, a: 1 },
           loadOp: 'clear',
           storeOp: 'store',
@@ -418,9 +434,7 @@ export class RasterRenderer {
       ],
     });
 
-    if (draws.length > 0) {
-      const vertexBuffer = this.#ensureVertexBuffer(scratch.byteLength);
-      device.queue.writeBuffer(vertexBuffer, 0, asSource(scratch), 0, cursor);
+    if (draws.length > 0 && vertexBuffer) {
       pass.setPipeline(pipeline);
       pass.setVertexBuffer(0, vertexBuffer);
       for (const d of draws) {

@@ -82,6 +82,7 @@ export class GpuContext {
     device.lost.then((lost) => {
       // 'destroyed' is a deliberate teardown; anything else is a real loss and
       // the only correct response is to rebuild every resource.
+      console.error('DEVICE LOST OCCURRED! Reason:', lost.reason, 'Message:', lost.message);
       if (lost.reason !== 'destroyed') {
         this.#lost = true;
         for (const handler of this.#onLost) handler(lost);
@@ -90,6 +91,7 @@ export class GpuContext {
 
     device.addEventListener('uncapturederror', (event) => {
       const error = (event as GPUUncapturedErrorEvent).error;
+      console.error('TERRASCOPE UNCAPTURED WEBGPU ERROR:', error.message);
       for (const handler of this.#onError) handler(error.message);
     });
   }
@@ -110,13 +112,28 @@ export class GpuContext {
       );
     }
 
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    // On dual-GPU laptops (e.g. Intel + NVIDIA on Linux), Dawn defaults or 'high-performance'
+    // often picks the discrete GPU while X11/Wayland display runs on the integrated GPU.
+    // In Chromium, that cross-adapter texture import fails in ImportMemory with
+    // "Requested allocation size is smaller than the image requires".
+    // Explicitly requesting 'low-power' first selects the integrated display GPU (Intel),
+    // avoiding the cross-adapter memory mismatch.
+    const urlPowerPref = typeof window !== 'undefined'
+      ? (new URLSearchParams(window.location.search).get('gpu') as GPUPowerPreference | null)
+      : null;
+    const adapter =
+      (urlPowerPref ? await navigator.gpu.requestAdapter({ powerPreference: urlPowerPref }) : null) ??
+      (await navigator.gpu.requestAdapter({ powerPreference: 'low-power' })) ??
+      (await navigator.gpu.requestAdapter()) ??
+      (await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }));
     if (!adapter) {
       throw new WebGpuUnavailable(
         'no-adapter',
         'No WebGPU adapter is available. The browser supports WebGPU but could not provide a GPU.',
       );
     }
+
+    console.info('[TerraScope] WebGPU adapter:', adapter.info?.vendor, adapter.info?.description || adapter.info?.device);
 
     const features: GpuFeatures = {
       canFilterFloat32: adapter.features.has('float32-filterable'),
@@ -165,6 +182,10 @@ export class GpuContext {
     return this.#lost;
   }
 
+  get configured(): boolean {
+    return this.#configured;
+  }
+
   /** Bind the canvas once. Calling again reconfigures the swap chain. */
   attachCanvas(canvas: HTMLCanvasElement): GPUTextureFormat {
     const context = canvas.getContext('webgpu');
@@ -187,7 +208,7 @@ export class GpuContext {
       device: this.device,
       format: this.#format,
       alphaMode,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this.#configured = true;
   }

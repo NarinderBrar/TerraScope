@@ -13,8 +13,8 @@ The cache is bounded on both axes:
 
 * at most ``max_datasets`` open handles, LRU evicted, so a client panning
   across many scenes cannot accumulate sockets or file descriptors;
-* GDAL's own VSI cache is capped by ``VSI_CACHE_SIZE`` (see
-  :mod:`app.gdal_config`), which bounds the decoded-block memory.
+* downloaded bytes are capped by ``CPL_VSIL_CURL_CACHE_SIZE`` (see
+  :mod:`app.gdal_config`), shared by every handle in every slot.
 
 Eviction calls ``close()`` explicitly. Leaking GDAL datasets is how a
 long-running container slowly runs out of file descriptors.
@@ -22,6 +22,8 @@ long-running container slowly runs out of file descriptors.
 
 from __future__ import annotations
 
+import os
+import queue
 import threading
 from collections import OrderedDict
 
@@ -33,7 +35,7 @@ DEFAULT_MAX_DATASETS = 8
 
 
 class DatasetCache:
-    """LRU cache of open datasets, safe to share across requests."""
+    """LRU cache of open datasets. Owned by one request at a time (a slot)."""
 
     def __init__(self, max_datasets: int = DEFAULT_MAX_DATASETS) -> None:
         self._max = max(1, max_datasets)
@@ -95,32 +97,60 @@ class DatasetCache:
             }
 
 
-#: Process-wide cache. A container is single-purpose, so sharing one instance
-#: across requests is what makes the warm path fast.
+#: Number of tiles that may be built concurrently. Each slot owns its own
+#: dataset handles, because a GDAL dataset must never be read from two threads
+#: at once -- that is what corrupted reads and deadlocked ``/vsicurl`` when one
+#: process-wide cache was shared by every request thread.
+TILE_WORKERS = max(1, int(os.environ.get("TILE_WORKERS", "4")))
+
+#: Idle slots. LIFO so the most recently used (warmest) handles are reused
+#: first. Every cache in here is owned by at most one request at a time.
+_SLOTS: "queue.LifoQueue[DatasetCache]" = queue.LifoQueue()
+for _ in range(TILE_WORKERS):
+    _SLOTS.put(DatasetCache())
+
+#: Retained for callers that only want a handle to "a" cache for inspection.
+#: Requests never read through it; they borrow a slot via :class:`AssetPool`.
 DATASETS = DatasetCache()
 
 
 class AssetPool:
-    """Request-scoped handle holder that borrows from the shared cache.
+    """Request-scoped borrow of one dataset-cache slot.
 
-    Kept as a context manager so the call sites read the same as before, but
-    datasets now outlive the request instead of being closed with it.
+    Entering (or the first ``open``) blocks until a slot is free, which is also
+    what bounds concurrent GDAL work to ``TILE_WORKERS``. Exiting returns the
+    slot with its handles still open, so the next request on the same scene
+    starts warm.
     """
 
     def __init__(self, cache: DatasetCache | None = None) -> None:
-        self._cache = cache or DATASETS
+        self._fixed = cache
+        self._slot: DatasetCache | None = None
+
+    def _cache(self) -> DatasetCache:
+        if self._fixed is not None:
+            return self._fixed
+        if self._slot is None:
+            self._slot = _SLOTS.get()
+        return self._slot
 
     def open(self, href: str) -> DatasetReader:
-        return self._cache.open(href)
+        return self._cache().open(href)
+
+    def acquire(self) -> None:
+        """Borrow the slot now. Required before opening from several threads:
+        the lazy borrow in ``_cache`` is not atomic, and two racing threads
+        would each take a slot and leak one."""
+        self._cache()
 
     def close(self) -> None:
-        # Deliberately a no-op: the cache owns the lifetime. This is the one
-        # behavioural difference from a naive per-request pool, and it is the
-        # whole point of the module.
-        return None
+        if self._slot is not None:
+            slot, self._slot = self._slot, None
+            _SLOTS.put(slot)
 
     def __enter__(self) -> "AssetPool":
+        self.acquire()
         return self
 
     def __exit__(self, *exc: object) -> None:
-        return None
+        self.close()

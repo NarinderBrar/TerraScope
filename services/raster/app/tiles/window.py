@@ -18,8 +18,10 @@ Alignment guarantees the rest of the system relies on:
 
 from __future__ import annotations
 
+import contextlib
 import math
 
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,10 +42,17 @@ from app.providers.sentinel2 import (
     BandAsset,
     SourceScene,
     apply_calibration,
+    CLOUD_SCL,
     quality_mask_from_scl,
     reflectance_analysis_mask,
 )
-from app.tiles.dataset_cache import AssetPool
+from app.tiles.dataset_cache import TILE_WORKERS, AssetPool
+
+#: Fans a tile's asset reads out across threads. Each asset has its own dataset
+#: handle, so no handle is ever read from two threads. Sized so every slot can
+#: read all of its assets (four bands plus quality) at once: a tile never
+#: queues behind another tile's reads.
+_ASSET_READERS = ThreadPoolExecutor(max_workers=TILE_WORKERS * 6, thread_name_prefix="asset-read")
 
 #: Web Mercator extent of the whole world, in metres.
 WEB_MERCATOR_SPAN = 40075016.685578488
@@ -112,6 +121,14 @@ class DisplayTileGrid:
             raise TileOutOfRange(f"tile y {self.y} outside [0,{n}) at z{self.z}")
 
     @property
+    def width(self) -> int:
+        return self.size
+
+    @property
+    def height(self) -> int:
+        return self.size
+
+    @property
     def side_m(self) -> float:
         return WEB_MERCATOR_SPAN / (2**self.z)
 
@@ -142,8 +159,80 @@ class DisplayTileGrid:
         return {"crs": "EPSG:3857", "tileSize": self.size, "z": self.z, "x": self.x, "y": self.y}
 
 
+class FrameOutOfRange(ValueError):
+    """Requested frame is outside the display CRS or over the size limits."""
+
+
+#: Pixel budget for one frame. A 4-band frame costs 25 bytes a pixel on the
+#: wire (four float32 bands plus nine uint8 masks), and EOT1 caps a payload at
+#: 8 MiB, so 320k pixels is what fits with room for the header.
+MAX_FRAME_PIXELS = 320_000
+MAX_FRAME_SIDE = 1024
+
+
+@dataclass(frozen=True)
+class FrameGrid:
+    """An arbitrary Web Mercator rectangle sampled at square pixels.
+
+    A timelapse locks the view, so each date is one read of exactly that view
+    rather than the ~20 display tiles covering it. The grid is defined by its
+    top-left corner and pixel size, which makes square pixels a property of the
+    type instead of something a caller has to get right.
+    """
+
+    left: float
+    top: float
+    res: float
+    width: int
+    height: int
+
+    def __post_init__(self) -> None:
+        if not (1 <= self.width <= MAX_FRAME_SIDE and 1 <= self.height <= MAX_FRAME_SIDE):
+            raise FrameOutOfRange(f"frame {self.width}x{self.height} outside [1,{MAX_FRAME_SIDE}] per side")
+        if self.width * self.height > MAX_FRAME_PIXELS:
+            raise FrameOutOfRange(f"frame {self.width}x{self.height} exceeds {MAX_FRAME_PIXELS} pixels")
+        if not (math.isfinite(self.res) and self.res > 0):
+            raise FrameOutOfRange("frame pixel size must be positive")
+        left, bottom, right, top = self.bounds_3857()
+        if left < -WEB_MERCATOR_HALF or right > WEB_MERCATOR_HALF or bottom < -WEB_MERCATOR_HALF or top > WEB_MERCATOR_HALF:
+            raise FrameOutOfRange("frame extends outside the Web Mercator extent")
+
+    @classmethod
+    def from_bounds(cls, left: float, bottom: float, right: float, top: float, width: int, height: int) -> "FrameGrid":
+        """Pixel size from the width; the height follows from it, so a caller's
+        rounding cannot make pixels non-square. Rejects a clearly
+        inconsistent aspect rather than silently stretching the image."""
+        if not (right > left and top > bottom):
+            raise FrameOutOfRange("frame bounds must be ordered")
+        res = (right - left) / width
+        if abs((top - bottom) / height - res) > 0.02 * res:
+            raise FrameOutOfRange("frame aspect does not match its pixel dimensions")
+        return cls(left=left, top=top, res=res, width=width, height=height)
+
+    @property
+    def resolution_m(self) -> float:
+        """Web Mercator metres per output pixel. Not the sensor's GSD."""
+        return self.res
+
+    def bounds_3857(self) -> tuple[float, float, float, float]:
+        return (self.left, self.top - self.res * self.height, self.left + self.res * self.width, self.top)
+
+    def bounds_wgs84(self) -> tuple[float, float, float, float]:
+        left, bottom, right, top = self.bounds_3857()
+        xs, ys = warp_transform(DISPLAY_CRS, WGS84, [left, right], [bottom, top])
+        return (xs[0], ys[0], xs[1], ys[1])
+
+    def to_dict(self) -> dict[str, Any]:
+        left, bottom, right, top = self.bounds_3857()
+        return {"crs": "EPSG:3857", "kind": "frame", "bounds": [left, bottom, right, top], "width": self.width, "height": self.height}
+
+
+#: Anything reads can be pinned to: an XYZ tile or a timelapse frame.
+Grid = DisplayTileGrid | FrameGrid
+
+
 def _read_pinned(
-    vrt: WarpedVRT, grid: DisplayTileGrid, out_dtype: str = "float32", *, bands: tuple[int, ...] = (1,)
+    vrt: WarpedVRT, grid: Grid, out_dtype: str = "float32", *, bands: tuple[int, ...] = (1,)
 ) -> np.ndarray | tuple[np.ndarray, ...]:
     """Read the display tile onto the *exact* XYZ grid.
 
@@ -160,7 +249,7 @@ def _read_pinned(
     """
     fill = np.float32(0) if vrt.nodata is None else np.float32(vrt.nodata)
     multi = len(bands) > 1
-    shape = ((len(bands), grid.size, grid.size) if multi else (grid.size, grid.size))
+    shape = ((len(bands), grid.height, grid.width) if multi else (grid.height, grid.width))
     out = np.full(shape, fill, dtype=np.float32)
 
     tile_left, tile_bottom, tile_right, tile_top = grid.bounds_3857()
@@ -172,12 +261,12 @@ def _read_pinned(
     if ix1 <= ix0 or iy1 <= iy0:
         return out
 
-    # Pixel indices of the overlap within the 256x256 output canvas.
+    # Pixel indices of the overlap within the output canvas.
     px0 = int(round((ix0 - tile_left) / res))
     py0 = int(round((tile_top - iy1) / res))
     nx = max(1, int(round((ix1 - ix0) / res)))
     ny = max(1, int(round((iy1 - iy0) / res)))
-    px1, py1 = min(grid.size, px0 + nx), min(grid.size, py0 + ny)
+    px1, py1 = min(grid.width, px0 + nx), min(grid.height, py0 + ny)
     if px1 <= px0 or py1 <= py0:
         return out
 
@@ -216,8 +305,21 @@ class WarpedBand:
 ALPHA_FULL = 65535.0
 
 
+def _overview_env(oversampling: float | None) -> contextlib.AbstractContextManager[Any]:
+    """Let GDAL read an overview up to ``oversampling`` times coarser than the
+    output pixel. Without it GDAL always picks the next *finer* level, which
+    for a frame between two levels downloads ~4x the data the screen shows.
+
+    Set per read, in the thread doing the read (GDAL config is thread-local
+    under rasterio.Env), so tiles keep GDAL's default selection exactly.
+    """
+    if oversampling is None:
+        return contextlib.nullcontext()
+    return rasterio.Env(GDAL_OVERVIEW_OVERSAMPLING_THRESHOLD=str(oversampling))
+
+
 def read_warped_band(
-    asset: BandAsset, grid: DisplayTileGrid, *, pool: AssetPool | None = None
+    asset: BandAsset, grid: Grid, *, pool: AssetPool | None = None, overview_oversampling: float | None = None
 ) -> WarpedBand:
     """Read a continuous reflectance band onto the display grid (bilinear).
 
@@ -238,7 +340,7 @@ def read_warped_band(
             src_nodata=asset.nodata,
             nodata=asset.nodata,
             add_alpha=True,
-        ) as vrt:
+        ) as vrt, _overview_env(overview_oversampling):
             data, alpha = _read_pinned(vrt, grid, bands=(1, 2))
 
         covered = alpha >= ALPHA_FULL
@@ -247,7 +349,7 @@ def read_warped_band(
             covered &= data != np.float32(asset.nodata)
 
         # Calibrate only the covered samples; NaN is the out-of-band signal.
-        refl = np.full(grid.size * grid.size, np.nan, dtype=np.float32).reshape(grid.size, grid.size)
+        refl = np.full((grid.height, grid.width), np.nan, dtype=np.float32)
         if covered.any():
             calibrated, _ = apply_calibration(
                 data[covered], asset.scale, asset.offset, None
@@ -267,8 +369,8 @@ def read_warped_band(
 
 
 def read_quality(
-    scene: SourceScene, grid: DisplayTileGrid, *, pool: AssetPool | None = None
-) -> tuple[np.ndarray, np.ndarray]:
+    scene: SourceScene, grid: Grid, *, pool: AssetPool | None = None, overview_oversampling: float | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Read SCL onto the display grid with nearest-neighbour resampling.
 
     A 50/50 blend of "vegetation" and "cloud" is not a class, so categorical
@@ -289,10 +391,14 @@ def read_quality(
             src_nodata=scene.quality.nodata,
             nodata=scene.quality.nodata,
             add_alpha=False,
-        ) as vrt:
+        ) as vrt, _overview_env(overview_oversampling):
             codes = _read_pinned(vrt, grid, out_dtype="float32").astype(np.int32)
         valid, retained = quality_mask_from_scl(codes)
-        return valid.astype(np.uint8), retained.astype(np.uint8)
+        # 1 = not cloud, cloud shadow or cirrus. Separate from `valid`, which
+        # also excludes dark areas and snow, so a view's cloudiness can be
+        # measured without counting terrain as weather.
+        clear = ~np.isin(codes, list(CLOUD_SCL))
+        return valid.astype(np.uint8), retained.astype(np.uint8), clear.astype(np.uint8)
     finally:
         if own:
             ctx.close()
@@ -300,11 +406,12 @@ def read_quality(
 
 def read_bands(
     scene: SourceScene,
-    grid: DisplayTileGrid,
+    grid: Grid,
     band_names: list[str],
     *,
     apply_quality_mask: bool = True,
     pool: AssetPool | None = None,
+    overview_oversampling: float | None = None,
 ) -> dict[str, Any]:
     """Read every band for a tile, plus the quality layer.
 
@@ -320,34 +427,60 @@ def read_bands(
     red sample, and the client must be able to say which rather than collapsing
     the two into a single boolean.
 
-    Bands are read sequentially and share the process-wide dataset cache.
-    Reading them from a thread pool is faster in principle but deadlocks inside
-    GDAL's ``/vsicurl`` layer, and the cache already removes the repeated-open
-    cost that parallelism was meant to address. The parameter is retained so
-    the call site documents the constraint rather than hiding it.
+    Assets are read in parallel through one borrowed cache slot. Each asset
+    is a separate dataset handle used by exactly one thread, so no handle is
+    ever shared between threads. A cold tile is latency-bound on range
+    requests, and five sequential cold reads were most of its cost.
     """
-    bands: dict[str, np.ndarray] = {}
-    coverage: dict[str, np.ndarray] = {}
-    analysis: dict[str, np.ndarray] = {}
-
-    for name in band_names:
-        wb = read_warped_band(scene.band_for(name), grid, pool=pool or AssetPool())
-        bands[name] = wb.values
-        coverage[name] = wb.covered
-        analysis[name] = wb.analytical
-
-    quality = np.ones((grid.size, grid.size), dtype=np.uint8)
-    if apply_quality_mask:
-        if scene.quality is None:
-            raise ValueError(
-                f"scene {scene.item_id} has no quality asset but a mask was requested"
+    if apply_quality_mask and scene.quality is None:
+        raise ValueError(
+            f"scene {scene.item_id} has no quality asset but a mask was requested"
+        )
+    own = pool is None
+    ctx = pool or AssetPool()
+    futures: list[Future[Any]] = []
+    try:
+        ctx.acquire()
+        # Tracked as each is submitted, so the slot is held for every read
+        # already running even if a later submission fails.
+        band_futures: dict[str, Future[WarpedBand]] = {}
+        for name in band_names:
+            band_futures[name] = _ASSET_READERS.submit(
+                read_warped_band, scene.band_for(name), grid, pool=ctx, overview_oversampling=overview_oversampling
             )
-        quality, _ = read_quality(scene, grid, pool=pool)
+            futures.append(band_futures[name])
+        quality_future = None
+        if apply_quality_mask:
+            quality_future = _ASSET_READERS.submit(
+                read_quality, scene, grid, pool=ctx, overview_oversampling=overview_oversampling
+            )
+            futures.append(quality_future)
 
-    return {
-        "bands": bands,
-        "coverage": coverage,
-        "analysis": analysis,
-        "quality": quality,
-        "scene": scene,
-    }
+        bands: dict[str, np.ndarray] = {}
+        coverage: dict[str, np.ndarray] = {}
+        analysis: dict[str, np.ndarray] = {}
+        for name, future in band_futures.items():
+            wb = future.result()
+            bands[name] = wb.values
+            coverage[name] = wb.covered
+            analysis[name] = wb.analytical
+
+        quality = np.ones((grid.height, grid.width), dtype=np.uint8)
+        clear: np.ndarray | None = None
+        if quality_future is not None:
+            quality, _, clear = quality_future.result()
+
+        return {
+            "bands": bands,
+            "coverage": coverage,
+            "analysis": analysis,
+            "quality": quality,
+            "clear": clear,
+            "scene": scene,
+        }
+    finally:
+        # A failed read must not hand the slot back while sibling reads are
+        # still using its handles.
+        wait(futures)
+        if own:
+            ctx.close()
