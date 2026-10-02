@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '@terrascope/contracts';
-import { MAX_FRAME_PIXELS, loadOrder, pickBySlots, planFrame, selectFrames, selectFramesForView } from '../src/app/timelapsePlan';
-import { monthChunks } from '../src/app/sceneSearch';
+import { MAX_FRAME_PIXELS, loadOrder, pickBySlots, planFrame, selectFrames, selectFramesForView, timelineWindow } from '../src/app/timelapsePlan';
+import { monthChunks, normalizeScenes } from '../src/app/sceneSearch';
 
 function scene(id: string, datetime: string, extra: Partial<Scene> = {}): Scene {
   return {
@@ -137,6 +137,19 @@ describe('monthChunks', () => {
   });
 });
 
+describe('normalizeScenes', () => {
+  it('deduplicates paged results and sorts a new array oldest first', () => {
+    const input = [
+      scene('late', '2024-06-21T18:00:00Z'),
+      scene('early', '2024-06-01T18:00:00Z'),
+      scene('late', '2024-06-21T18:00:00Z'),
+      scene('middle', '2024-06-16T18:00:00Z'),
+    ];
+    expect(normalizeScenes(input).map((item) => item.id)).toEqual(['early', 'middle', 'late']);
+    expect(input.map((item) => item.id)).toEqual(['late', 'early', 'late', 'middle']);
+  });
+});
+
 describe('loadOrder', () => {
   it('starts with the first frame and covers every frame exactly once', () => {
     for (const n of [0, 1, 2, 3, 7, 16, 40]) {
@@ -151,6 +164,19 @@ describe('loadOrder', () => {
     const order = loadOrder(20);
     expect(order.indexOf(19)).toBeLessThan(4);
     expect(order.indexOf(9)).toBeLessThan(6);
+  });
+});
+
+describe('timelineWindow', () => {
+  it('prioritises current, next two, then previous', () => {
+    expect(timelineWindow(10, 4, 1, false)).toEqual([4, 5, 6, 3]);
+    expect(timelineWindow(10, 4, -1, false)).toEqual([4, 3, 2, 5]);
+  });
+
+  it('wraps only while looping, skips removed dates and never duplicates', () => {
+    expect(timelineWindow(5, 4, 1, true)).toEqual([4, 0, 1, 3]);
+    expect(timelineWindow(5, 4, 1, false)).toEqual([4, 3]);
+    expect(timelineWindow(3, 0, 1, true, [false, true, false])).toEqual([0, 2]);
   });
 });
 

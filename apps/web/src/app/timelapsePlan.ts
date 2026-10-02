@@ -257,6 +257,34 @@ export function loadOrder(count: number): number[] {
   return out;
 }
 
+/**
+ * Small moving prefetch window around the displayed date.
+ *
+ * Playback direction wins: current, next, next + 1, then previous. At the
+ * ends the indices wrap only when looping is enabled. Removed dates are
+ * skipped, and every returned index is unique.
+ */
+export function timelineWindow(
+  count: number,
+  current: number,
+  direction: 1 | -1,
+  loop: boolean,
+  excluded: readonly boolean[] = [],
+): number[] {
+  if (count <= 0) return [];
+  const out: number[] = [];
+  const add = (raw: number): void => {
+    const index = loop ? ((raw % count) + count) % count : raw;
+    if (index < 0 || index >= count || excluded[index] || out.includes(index)) return;
+    out.push(index);
+  };
+  add(current);
+  add(current + direction);
+  add(current + direction * 2);
+  add(current - direction);
+  return out;
+}
+
 export interface FramePlan {
   /** [left, bottom, right, top] in EPSG:3857 metres. */
   bounds3857: [number, number, number, number];

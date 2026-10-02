@@ -87,9 +87,17 @@ export async function searchView(
     }
   };
   await Promise.all(Array.from({ length: Math.min(MONTH_CONCURRENCY, months.length) }, worker));
-  scenes.sort((a, b) => a.datetime.localeCompare(b.datetime));
+  const normalized = normalizeScenes(scenes);
   truncatedMonths.sort();
-  return { scenes, truncatedMonths, searched: { from: start, to: end } };
+  return { scenes: normalized, truncatedMonths, searched: { from: start, to: end } };
+}
+
+/** Deduplicate paged/catalog results without mutating them, then order oldest first. */
+export function normalizeScenes(scenes: readonly Scene[]): Scene[] {
+  const unique = new Map<string, Scene>();
+  for (const scene of scenes) unique.set(scene.id, scene);
+  return [...unique.values()].sort((a, b) =>
+    a.datetime.localeCompare(b.datetime) || a.collection.localeCompare(b.collection) || a.id.localeCompare(b.id));
 }
 
 async function searchMonth(

@@ -25,12 +25,14 @@ import { RasterClient, RasterError, type RequestProgress, type TileDescriptor } 
 import type { NumericTile, Scene } from '@terrascope/contracts';
 import { lonLatToWorldPx, TILE_SIZE } from '@terrascope/contracts';
 import { computeNdvi } from '../analysis/AnalysisPipelines';
-import { loadOrder, planFrame, type FramePlan, type FrameScene } from './timelapsePlan';
+import { planFrame, timelineWindow, type FramePlan, type FrameScene } from './timelapsePlan';
+import { TileRequestScheduler } from '../map/TileRequestScheduler';
 
 /** The profile every view requests. Only this one has all four bands. */
 const PROFILE = 'rgbn';
 /** Delay before a tile that failed for a reason other than 404 is requested again. */
 const TILE_RETRY_MS = 10_000;
+const MAX_CONCURRENT_TILE_REQUESTS = 6;
 
 export interface MapStats {
   resident: number;
@@ -113,7 +115,7 @@ export class MapScene {
    */
   #gpu = new Map<string, RenderTile>();
 
-  #pending = new Map<string, AbortController>();
+  #pending = new TileRequestScheduler(MAX_CONCURRENT_TILE_REQUESTS);
   /** Tile key -> earliest time (ms) it may be requested again. */
   #failed = new Map<string, number>();
   #lastTileError: string | null = null;
@@ -236,7 +238,6 @@ export class MapScene {
     this.#disposed = true;
     this.#stop();
     this.stopTimelapse();
-    for (const controller of this.#pending.values()) controller.abort();
     this.#pending.clear();
     for (const tile of this.#gpu.values()) this.#renderer?.destroyTile(tile);
     this.#gpu.clear();
@@ -262,7 +263,6 @@ export class MapScene {
     // Comparison resources are attached to A's resident tiles. They must be
     // released before changing B or a tile outside the new viewport can keep
     // the previous acquisition alive indefinitely.
-    for (const controller of this.#pending.values()) controller.abort();
     this.#pending.clear();
     this.#failed.clear();
     for (const tile of this.#gpu.values()) this.#renderer?.releaseSecondDate(tile);
@@ -309,7 +309,6 @@ export class MapScene {
   startTimelapse(frames: readonly FrameScene[]): void {
     if (frames.length === 0) return;
     this.stopTimelapse();
-    for (const controller of this.#pending.values()) controller.abort();
     this.#pending.clear();
     // Frames carry one date each; swipe and difference need two.
     this.#setSceneB(null);
@@ -326,11 +325,11 @@ export class MapScene {
       manual: frames.map(() => false),
       userSeeked: false,
       plan: planFrame(this.viewBounds(), this.#viewport),
-      order: loadOrder(frames.length),
       tiles: new Map(),
       loading: new Set(),
-      controller: new AbortController(),
+      controllers: new Map(),
       index: 0,
+      direction: 1,
       playing: false,
       fps: 4,
       loop: true,
@@ -348,7 +347,7 @@ export class MapScene {
   stopTimelapse(): void {
     const timelapse = this.#timelapse;
     if (!timelapse) return;
-    timelapse.controller.abort();
+    for (const controller of timelapse.controllers.values()) controller.abort();
     for (const tile of timelapse.tiles.values()) this.#renderer?.destroyTile(tile);
     this.#timelapse = null;
     this.#drawnFrame = null;
@@ -363,6 +362,7 @@ export class MapScene {
     timelapse.userSeeked = true;
     timelapse.playing = true;
     timelapse.lastStep = performance.now();
+    this.#pumpFrames();
     this.#publishTimelapse();
   }
 
@@ -378,14 +378,13 @@ export class MapScene {
   seek(index: number): void {
     const timelapse = this.#timelapse;
     if (!timelapse) return;
-    timelapse.index = Math.max(0, Math.min(timelapse.frames.length - 1, Math.round(index)));
+    const next = Math.max(0, Math.min(timelapse.frames.length - 1, Math.round(index)));
+    if (next !== timelapse.index) timelapse.direction = next > timelapse.index ? 1 : -1;
+    timelapse.index = next;
     timelapse.userSeeked = true;
     timelapse.playing = false;
     timelapse.buffering = false;
-    if (timelapse.status[timelapse.index] === 'idle') {
-      timelapse.order = [timelapse.index, ...timelapse.order.filter((i) => i !== timelapse.index)];
-      this.#pumpFrames();
-    }
+    this.#pumpFrames();
     this.#publishTimelapse();
     // Paused with everything loaded, the loop is idle and draws only when
     // invalidated -- without this the label moves and the picture does not.
@@ -397,6 +396,7 @@ export class MapScene {
     if (!timelapse) return;
     if (options.fps != null) timelapse.fps = Math.max(0.5, Math.min(30, options.fps));
     if (options.loop != null) timelapse.loop = options.loop;
+    this.#pumpFrames();
     this.#publishTimelapse();
   }
 
@@ -413,7 +413,7 @@ export class MapScene {
     timelapse.excluded[index] = !timelapse.excluded[index];
     timelapse.manual[index] = true;
     timelapse.autoRemoved[index] = false;
-    if (!timelapse.excluded[index]) this.#pumpFrames();
+    this.#pumpFrames();
     this.#publishTimelapse();
     this.#invalidate();
   }
@@ -428,6 +428,7 @@ export class MapScene {
     const timelapse = this.#timelapse;
     if (timelapse) {
       timelapse.frames.forEach((_, i) => this.#applyCloudRule(timelapse, i));
+      this.#pumpFrames();
       this.#publishTimelapse();
       this.#invalidate();
     }
@@ -450,6 +451,7 @@ export class MapScene {
       const kept = nearestKept(timelapse, timelapse.index);
       if (kept != null) timelapse.index = kept;
     }
+    this.#pumpFrames();
     this.#publishTimelapse();
     this.#invalidate();
   }
@@ -498,9 +500,24 @@ export class MapScene {
   #pumpFrames(): void {
     const timelapse = this.#timelapse;
     if (!timelapse) return;
+    const wanted = timelineWindow(
+      timelapse.frames.length,
+      timelapse.index,
+      timelapse.direction,
+      timelapse.loop,
+      timelapse.excluded,
+    );
+    const wantedSet = new Set(wanted);
+    for (const [index, controller] of timelapse.controllers) {
+      if (wantedSet.has(index)) continue;
+      controller.abort();
+      timelapse.controllers.delete(index);
+      timelapse.loading.delete(index);
+      if (timelapse.status[index] === 'loading') timelapse.status[index] = 'idle';
+    }
     const anyReady = timelapse.status.includes('ready');
     while (timelapse.loading.size < (anyReady ? FRAME_CONCURRENCY : 1)) {
-      const next = timelapse.order.find((i) => timelapse.status[i] === 'idle' && !timelapse.excluded[i]);
+      const next = wanted.find((i) => timelapse.status[i] === 'idle');
       if (next === undefined) return;
       this.#loadFrame(timelapse, next);
     }
@@ -508,6 +525,8 @@ export class MapScene {
 
   #loadFrame(timelapse: TimelapseSession, index: number): void {
     const scene = timelapse.frames[index];
+    const controller = new AbortController();
+    timelapse.controllers.set(index, controller);
     timelapse.status[index] = 'loading';
     timelapse.loading.add(index);
     void this.client
@@ -522,11 +541,12 @@ export class MapScene {
           qualityMask: this.#settings.qualityMask,
           mosaic: scene.mosaicIds,
         },
-        { signal: timelapse.controller.signal },
+        { signal: controller.signal },
       )
       .then((tile) => {
         timelapse.loading.delete(index);
-        if (timelapse !== this.#timelapse || timelapse.controller.signal.aborted) return;
+        if (timelapse.controllers.get(index) === controller) timelapse.controllers.delete(index);
+        if (timelapse !== this.#timelapse || controller.signal.aborted) return;
         const renderer = this.#renderer;
         const ndvi = this.#ndvi;
         if (!renderer || !ndvi) return;
@@ -534,6 +554,7 @@ export class MapScene {
         ndvi.runNdvi(analysis);
         timelapse.tiles.set(index, renderer.upload(frameKey(index), tile, analysis));
         timelapse.status[index] = 'ready';
+        this.#evictFrames(timelapse);
         timelapse.viewCloud[index] = viewCloudFraction(tile);
         timelapse.viewVegetation[index] = viewVegetationStats(tile);
         this.#applyCloudRule(timelapse, index);
@@ -555,13 +576,34 @@ export class MapScene {
       })
       .catch((error: unknown) => {
         timelapse.loading.delete(index);
-        if (timelapse !== this.#timelapse || timelapse.controller.signal.aborted) return;
+        if (timelapse.controllers.get(index) === controller) timelapse.controllers.delete(index);
+        if (timelapse !== this.#timelapse || controller.signal.aborted) return;
         timelapse.status[index] = 'failed';
         this.#lastTileError = `Frame ${scene.datetime.slice(0, 10)} failed: ${describe(error)}`;
         this.#pumpFrames();
         this.#publishTimelapse();
         this.#invalidate();
       });
+  }
+
+  #evictFrames(timelapse: TimelapseSession): void {
+    if (timelapse.tiles.size <= MAX_RESIDENT_FRAMES) return;
+    const keep = new Set(timelineWindow(
+      timelapse.frames.length,
+      timelapse.index,
+      timelapse.direction,
+      timelapse.loop,
+      timelapse.excluded,
+    ));
+    for (const [index, tile] of timelapse.tiles) {
+      if (timelapse.tiles.size <= MAX_RESIDENT_FRAMES) break;
+      if (keep.has(index)) continue;
+      this.#renderer?.destroyTile(tile);
+      timelapse.tiles.delete(index);
+      timelapse.status[index] = 'idle';
+      timelapse.viewCloud[index] = null;
+      timelapse.viewVegetation[index] = null;
+    }
   }
 
   #renderTimelapse(renderer: RasterRenderer, timelapse: TimelapseSession): void {
@@ -618,9 +660,12 @@ export class MapScene {
       if (status === 'failed' || timelapse.excluded[next]) continue;
       if (status === 'ready') {
         timelapse.index = next;
+        timelapse.direction = 1;
         timelapse.buffering = false;
+        this.#pumpFrames();
       } else {
         timelapse.buffering = true;
+        this.#pumpFrames();
       }
       this.#publishTimelapse();
       return;
@@ -802,37 +847,42 @@ export class MapScene {
       // They are requested before any detail tile, which puts them at the
       // front of the client's queue and warms the server's dataset handles.
       const preview = previewTiles(scene, visible.map((item) => item.tile));
-      for (const tile of preview) {
+      for (const [distance, tile] of preview.entries()) {
         wanted.add(tileKey(scene, tile.z, tile.x, tile.y));
-        this.#ensure(tile.z, tile.x, tile.y, scene, false);
+        this.#ensure(tile.z, tile.x, tile.y, scene, false, requestScore(0, distance));
       }
       // Until the first image of a scene is resident, detail requests would
       // only compete with the preview for server slots. After that, the
       // preview is just the first entry in each frame's queue.
       const holdDetail = preview.some((tile) => this.#pending.has(tileKey(scene, tile.z, tile.x, tile.y)))
         && !this.#hasResident(scene);
+      // Parents outrank exact tiles; within each level the centre goes first.
+      for (const item of holdDetail ? [] : visible) {
+        const parent = parentTile(item.tile.z, item.tile.x, item.tile.y);
+        if (parent && covers(scene, parent.z, parent.x, parent.y)) {
+          wanted.add(tileKey(scene, parent.z, parent.x, parent.y));
+          this.#ensure(parent.z, parent.x, parent.y, scene, false, requestScore(1, 1 - item.priority));
+        }
+      }
       for (const item of holdDetail ? [] : visible) {
         if (covers(scene, item.tile.z, item.tile.x, item.tile.y)) {
           wanted.add(tileKey(scene, item.tile.z, item.tile.x, item.tile.y));
         }
-        this.#ensure(item.tile.z, item.tile.x, item.tile.y, scene, false);
-        const parent = parentTile(item.tile.z, item.tile.x, item.tile.y);
-        if (parent && covers(scene, parent.z, parent.x, parent.y)) {
-          wanted.add(tileKey(scene, parent.z, parent.x, parent.y));
-          this.#ensure(parent.z, parent.x, parent.y, scene, false);
-        }
+        this.#ensure(item.tile.z, item.tile.x, item.tile.y, scene, false, requestScore(2, 1 - item.priority));
       }
       if (this.#sceneB) {
+        for (const item of visible) {
+          const parent = parentTile(item.tile.z, item.tile.x, item.tile.y);
+          if (parent && covers(this.#sceneB, parent.z, parent.x, parent.y)) {
+            wanted.add(tileKey(this.#sceneB, parent.z, parent.x, parent.y));
+            this.#ensure(parent.z, parent.x, parent.y, this.#sceneB, true, requestScore(1, 1 - item.priority));
+          }
+        }
         for (const item of visible) {
           if (covers(this.#sceneB, item.tile.z, item.tile.x, item.tile.y)) {
             wanted.add(tileKey(this.#sceneB, item.tile.z, item.tile.x, item.tile.y));
           }
-          this.#ensure(item.tile.z, item.tile.x, item.tile.y, this.#sceneB, true);
-          const parent = parentTile(item.tile.z, item.tile.x, item.tile.y);
-          if (parent && covers(this.#sceneB, parent.z, parent.x, parent.y)) {
-            wanted.add(tileKey(this.#sceneB, parent.z, parent.x, parent.y));
-            this.#ensure(parent.z, parent.x, parent.y, this.#sceneB, true);
-          }
+          this.#ensure(item.tile.z, item.tile.x, item.tile.y, this.#sceneB, true, requestScore(2, 1 - item.priority));
         }
       }
       this.#abortUnwanted(wanted);
@@ -877,7 +927,7 @@ export class MapScene {
 
   // ---- tile residency ----------------------------------------------------
 
-  #ensure(z: number, x: number, y: number, scene: Scene, isSecond: boolean): void {
+  #ensure(z: number, x: number, y: number, scene: Scene, isSecond: boolean, priority: number): void {
     const key = tileKey(scene, z, x, y);
     if (isSecond) {
       // Only fetch B once A is resident: a swipe of two half-loaded dates shows
@@ -898,8 +948,6 @@ export class MapScene {
     // for a scene that does not cover the view.
     if (!covers(scene, z, x, y)) return;
 
-    const controller = new AbortController();
-    this.#pending.set(key, controller);
     const descriptor: TileDescriptor = {
       collection: scene.collection,
       itemId: scene.id,
@@ -909,18 +957,17 @@ export class MapScene {
       x,
       y,
     };
-    void this.client
-      .tile(descriptor, { signal: controller.signal })
+    this.#pending.enqueue({ key, priority, run: async (signal) => {
+      await this.client
+      .tile(descriptor, { signal })
       .then((tile) => {
-        this.#pending.delete(key);
         // Abort can race response decoding. An obsolete response must never
         // allocate GPU resources after the camera or date has moved on.
-        if (controller.signal.aborted) return;
+        if (signal.aborted) return;
         this.#admit(key, tile, z, x, y, isSecond);
       })
       .catch((error: unknown) => {
-        this.#pending.delete(key);
-        if (controller.signal.aborted) return;
+        if (signal.aborted) return;
         // 404 is the normal answer for a tile outside the scene footprint.
         // Retrying it forever would pin the scene's edges as permanent errors.
         if (error instanceof RasterError && error.status === 404) {
@@ -936,6 +983,7 @@ export class MapScene {
         this.#publishStats();
         setTimeout(() => this.#invalidate(), TILE_RETRY_MS);
       });
+    }});
   }
 
   #admit(
@@ -1048,15 +1096,10 @@ export class MapScene {
 
   /** Cancel queued and active work that can no longer contribute to the view. */
   #abortUnwanted(wanted: ReadonlySet<string>): void {
-    for (const [key, controller] of this.#pending) {
-      if (wanted.has(key)) continue;
-      controller.abort();
-      this.#pending.delete(key);
-    }
+    this.#pending.cancelExcept(wanted);
   }
 
   #clearTiles(): void {
-    for (const controller of this.#pending.values()) controller.abort();
     this.#pending.clear();
     this.#failed.clear();
     for (const tile of this.#gpu.values()) this.#renderer?.destroyTile(tile);
@@ -1103,6 +1146,11 @@ const COARSEST_ZOOM = 8;
 /** Levels between the view and its preview tiles. */
 const PREVIEW_ZOOM_DROP = 3;
 const BYTES_PER_TILE_ESTIMATE = 256 * 256 * 40;
+
+/** Resolution dominates distance: parent centre, parent edge, exact centre, exact edge. */
+function requestScore(resolutionPriority: number, distance: number): number {
+  return resolutionPriority * 1_000 + Math.max(0, distance);
+}
 
 function emptyStats(): MapStats {
   return {
@@ -1188,12 +1236,12 @@ interface TimelapseSession {
   /** The user has played, scrubbed or stepped; from then on the position is theirs. */
   userSeeked: boolean;
   plan: FramePlan;
-  order: number[];
-  /** GPU resources per frame index. Separate from the tile LRU: never evicted mid-play. */
+  /** GPU resources per frame index, bounded independently from ordinary tiles. */
   tiles: Map<number, RenderTile>;
   loading: Set<number>;
-  controller: AbortController;
+  controllers: Map<number, AbortController>;
   index: number;
+  direction: 1 | -1;
   playing: boolean;
   fps: number;
   loop: boolean;
@@ -1207,6 +1255,8 @@ interface TimelapseSession {
  * and playback needs them in order.
  */
 const FRAME_CONCURRENCY = 2;
+/** Four nearby frames plus two recently viewed frames for smooth back-scrubbing. */
+const MAX_RESIDENT_FRAMES = 6;
 
 /**
  * Default cloud rule: drop frames with more than 30% of the view under cloud.
