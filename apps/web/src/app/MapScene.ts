@@ -321,6 +321,7 @@ export class MapScene {
       status: frames.map(() => 'idle' as FrameStatus),
       excluded: frames.map(() => false),
       viewCloud: frames.map(() => null),
+      viewVegetation: frames.map(() => null),
       autoRemoved: frames.map(() => false),
       manual: frames.map(() => false),
       userSeeked: false,
@@ -432,6 +433,43 @@ export class MapScene {
     }
   }
 
+  /**
+   * Explicitly drop/remove all frames exceeding the specified cloud threshold (default 0.3 = 30%).
+   */
+  dropCloudyFrames(threshold = 0.3): void {
+    const timelapse = this.#timelapse;
+    if (!timelapse) return;
+    for (let i = 0; i < timelapse.frames.length; i += 1) {
+      const cloud = timelapse.viewCloud[i] ?? (timelapse.frames[i].cloudCover != null ? timelapse.frames[i].cloudCover! / 100 : null);
+      if (cloud != null && cloud > threshold) {
+        timelapse.excluded[i] = true;
+        timelapse.manual[i] = true;
+      }
+    }
+    if (timelapse.excluded[timelapse.index]) {
+      const kept = nearestKept(timelapse, timelapse.index);
+      if (kept != null) timelapse.index = kept;
+    }
+    this.#publishTimelapse();
+    this.#invalidate();
+  }
+
+  /**
+   * Restore all frames to playback.
+   */
+  restoreAllFrames(): void {
+    const timelapse = this.#timelapse;
+    if (!timelapse) return;
+    for (let i = 0; i < timelapse.frames.length; i += 1) {
+      timelapse.excluded[i] = false;
+      timelapse.manual[i] = true;
+      timelapse.autoRemoved[i] = false;
+    }
+    this.#pumpFrames();
+    this.#publishTimelapse();
+    this.#invalidate();
+  }
+
   #applyCloudRule(timelapse: TimelapseSession, index: number): void {
     const cloud = timelapse.viewCloud[index];
     if (timelapse.manual[index] || cloud == null) return;
@@ -497,6 +535,7 @@ export class MapScene {
         timelapse.tiles.set(index, renderer.upload(frameKey(index), tile, analysis));
         timelapse.status[index] = 'ready';
         timelapse.viewCloud[index] = viewCloudFraction(tile);
+        timelapse.viewVegetation[index] = viewVegetationStats(tile);
         this.#applyCloudRule(timelapse, index);
         // Until the user takes over, rest on the earliest date still in the
         // timeline. The first frame loads alone and may be removed as cloudy;
@@ -601,6 +640,7 @@ export class MapScene {
           status: [...timelapse.status],
           excluded: [...timelapse.excluded],
           viewCloud: [...timelapse.viewCloud],
+          viewVegetation: [...timelapse.viewVegetation],
           autoRemoved: [...timelapse.autoRemoved],
           autoCloud: this.#autoCloud,
           index: timelapse.index,
@@ -1098,6 +1138,12 @@ export interface MapView {
 
 export type FrameStatus = 'idle' | 'loading' | 'ready' | 'failed';
 
+export interface FrameVegetationStats {
+  meanNdvi: number;
+  vegetationPercent: number;
+  sampleCount: number;
+}
+
 /** Immutable snapshot for React. Replaced, never mutated, on every change. */
 export interface TimelapseState {
   active: boolean;
@@ -1107,6 +1153,8 @@ export interface TimelapseState {
   excluded: readonly boolean[];
   /** Per frame: fraction of the view that is cloud, shadow or cirrus; null until loaded. */
   viewCloud: readonly (number | null)[];
+  /** Per frame: mean vegetation index and cover percentage; null until loaded. */
+  viewVegetation: readonly (FrameVegetationStats | null)[];
   /** Per frame: removed by the cloud rule. */
   autoRemoved: readonly boolean[];
   /** Cloud rule threshold (fraction of the view), or null when off. */
@@ -1121,7 +1169,7 @@ export interface TimelapseState {
 }
 
 export const IDLE_TIMELAPSE: TimelapseState = {
-  active: false, frames: [], status: [], excluded: [], viewCloud: [], autoRemoved: [], autoCloud: null, index: 0, playing: false, buffering: false, fps: 4, loop: true, frameSize: null,
+  active: false, frames: [], status: [], excluded: [], viewCloud: [], viewVegetation: [], autoRemoved: [], autoCloud: null, index: 0, playing: false, buffering: false, fps: 4, loop: true, frameSize: null,
 };
 
 interface TimelapseSession {
@@ -1131,6 +1179,8 @@ interface TimelapseSession {
   excluded: boolean[];
   /** Fraction of the view under cloud, cloud shadow or cirrus; null until loaded. */
   viewCloud: Array<number | null>;
+  /** Vegetation statistics; null until loaded. */
+  viewVegetation: Array<FrameVegetationStats | null>;
   /** Removed by the cloud rule rather than by the user. */
   autoRemoved: boolean[];
   /** The user toggled this date: the cloud rule leaves it alone from then on. */
@@ -1182,6 +1232,42 @@ function viewCloudFraction(tile: NumericTile): number | null {
     if (clear[i] !== 1) cloudy += 1;
   }
   return total > 0 ? cloudy / total : null;
+}
+
+/**
+ * Vegetation metrics over the clear, covered pixels in this frame:
+ * mean NDVI and the percentage of area with living vegetation (NDVI >= 0.25).
+ */
+function viewVegetationStats(tile: NumericTile): FrameVegetationStats | null {
+  const red = tile.bands['red'];
+  const nir = tile.bands['nir'];
+  const clear = tile.masks['clear'];
+  const covered = tile.masks['coverage:red'];
+  if (!red || !nir || !clear || !covered) return null;
+  let validCount = 0;
+  let sumNdvi = 0;
+  let vegCount = 0;
+  const len = covered.length;
+  for (let i = 0; i < len; i += 1) {
+    if (covered[i] !== 1) continue;
+    if (clear[i] !== 1) continue;
+    const r = red[i];
+    const n = nir[i];
+    if (!Number.isFinite(r) || !Number.isFinite(n)) continue;
+    const denom = n + r;
+    if (Math.abs(denom) <= 1e-3) continue;
+    const ndvi = (n - r) / denom;
+    if (!Number.isFinite(ndvi)) continue;
+    validCount += 1;
+    sumNdvi += ndvi;
+    if (ndvi >= 0.25) vegCount += 1;
+  }
+  if (validCount === 0) return null;
+  return {
+    meanNdvi: sumNdvi / validCount,
+    vegetationPercent: (vegCount / validCount) * 100,
+    sampleCount: validCount,
+  };
 }
 
 /** Nearest loaded frame still in the timeline, looking forward first. */

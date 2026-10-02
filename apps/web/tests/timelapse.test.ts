@@ -180,3 +180,27 @@ describe('planFrame', () => {
     expect(plan.height).toBeLessThanOrEqual(300);
   });
 });
+
+describe('cloud filtering and vegetation state', () => {
+  const square = (w: number, s2: number, e: number, n: number): Scene['geometry'] => ({
+    type: 'Polygon', coordinates: [[[w, s2], [e, s2], [e, n], [w, n], [w, s2]]],
+  });
+  const view = { west: -121.5, south: 37.95, east: -121.1, north: 38.25 };
+
+  it('filters out scenes exceeding maxCloud threshold', () => {
+    const scenes = [
+      scene('clear', '2024-06-02T18:00:00Z', { cloudCover: 15, geometry: square(-122, 37.8, -120, 38.8) }),
+      scene('partly-cloudy', '2024-06-10T18:00:00Z', { cloudCover: 45, geometry: square(-122, 37.8, -120, 38.8) }),
+      scene('heavy-cloud', '2024-06-18T18:00:00Z', { cloudCover: 85, geometry: square(-122, 37.8, -120, 38.8) }),
+    ];
+
+    const strict = selectFramesForView(scenes, view, 20);
+    expect(strict.frames.map((f) => f.id)).toEqual(['clear']);
+
+    const moderate = selectFramesForView(scenes, view, 50);
+    expect(moderate.frames.map((f) => f.id)).toEqual(['clear', 'partly-cloudy']);
+
+    const all = selectFramesForView(scenes, view, 100);
+    expect(all.frames.map((f) => f.id)).toEqual(['clear', 'partly-cloudy', 'heavy-cloud']);
+  });
+});

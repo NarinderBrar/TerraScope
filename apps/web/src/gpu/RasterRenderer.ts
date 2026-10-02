@@ -20,7 +20,7 @@ import { RAMP_BANDS, type RampBand } from '../ui/ramps';
 import tileShader from './shaders/tile.wgsl?raw';
 
 /** Layers `tile.wgsl` understands. Values must match the shader's `layer`. */
-export type RenderLayer = 'natural' | 'false' | 'ndvi' | 'difference' | 'band';
+export type RenderLayer = 'natural' | 'false' | 'ndvi' | 'difference' | 'band' | 'vegetation';
 
 export interface RenderSettings {
   layer: RenderLayer;
@@ -491,6 +491,7 @@ const LAYER_INDEX: Record<RenderLayer, number> = {
   difference: 2,
   band: 3,
   false: 4,
+  vegetation: 5,
 };
 
 /**

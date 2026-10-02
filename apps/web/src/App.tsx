@@ -45,6 +45,7 @@ const MAX_TIMELAPSE_FRAMES = 60;
 
 const LAYERS: Array<{ id: RenderLayer; label: string }> = [
   { id: 'natural', label: 'Natural colour' },
+  { id: 'vegetation', label: 'Vegetation (Green / Gray)' },
   { id: 'false', label: 'False colour (NIR)' },
   { id: 'ndvi', label: 'NDVI' },
   { id: 'band', label: 'Single band' },
@@ -189,7 +190,11 @@ function CanvasAndScene({
           {timelapse.active && stats.firstImageMs != null && (
             <span>first frame {(stats.firstImageMs / 1000).toFixed(2)} s</span>
           )}
-          {timelapse.active && <span className="locked-chip">View locked</span>}
+          {timelapse.active && (
+            <span className="locked-chip" title="Map bounds are frozen to this view during timeline playback">
+              🔒 Timeline Bounds Frozen
+            </span>
+          )}
           <span className="attribution">{timelapse.active ? timelapse.frames[timelapse.index]?.attribution : BASEMAP_ATTRIBUTION}</span>
         </div>
       </div>
@@ -230,12 +235,222 @@ function LoadingBars({ stats, timelapse }: { stats: MapStats; timelapse: boolean
   );
 }
 
+function VegetationGraph({
+  scene,
+  state,
+  onClose,
+}: {
+  scene: MapScene;
+  state: TimelapseState;
+  onClose: () => void;
+}): React.JSX.Element | null {
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const count = state.frames.length;
+  if (count === 0) return null;
+
+  const width = 800;
+  const height = 100;
+  const padLeft = 40;
+  const padRight = 20;
+  const padTop = 15;
+  const padBottom = 22;
+  const plotWidth = width - padLeft - padRight;
+  const plotHeight = height - padTop - padBottom;
+
+  const getX = (index: number): number => {
+    return padLeft + (count > 1 ? (index / (count - 1)) * plotWidth : plotWidth / 2);
+  };
+
+  const getY = (ndvi: number): number => {
+    const clamped = Math.max(0, Math.min(1, ndvi));
+    return padTop + (1 - clamped) * plotHeight;
+  };
+
+  const loadedPoints = state.frames
+    .map((_, i) => {
+      const stats = state.viewVegetation[i];
+      if (!stats) return null;
+      return { x: getX(i), y: getY(stats.meanNdvi), index: i };
+    })
+    .filter((pt): pt is { x: number; y: number; index: number } => pt != null);
+
+  const pathD = loadedPoints.length > 1
+    ? loadedPoints.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`).join(' ')
+    : '';
+
+  const areaD = loadedPoints.length > 1
+    ? `${pathD} L ${loadedPoints[loadedPoints.length - 1].x.toFixed(1)} ${(padTop + plotHeight).toFixed(1)} L ${loadedPoints[0].x.toFixed(1)} ${(padTop + plotHeight).toFixed(1)} Z`
+    : '';
+
+  const currentStats = state.viewVegetation[state.index];
+  const hoveredItem = hoveredIdx != null ? {
+    index: hoveredIdx,
+    frame: state.frames[hoveredIdx],
+    stats: state.viewVegetation[hoveredIdx],
+    cloud: state.viewCloud[hoveredIdx],
+    excluded: state.excluded[hoveredIdx],
+  } : null;
+
+  const thresholdY = getY(0.25);
+
+  return (
+    <div className="vegetation-graph">
+      <div className="graph-header">
+        <div className="graph-title">
+          <span className="graph-icon">📈</span>
+          <strong>Vegetation Trend</strong>
+          <span className="graph-subtitle">Mean NDVI over view</span>
+          {currentStats && (
+            <span className="current-ndvi-pill">
+              NDVI: <strong>{currentStats.meanNdvi.toFixed(2)}</strong> · {Math.round(currentStats.vegetationPercent)}% green cover
+            </span>
+          )}
+        </div>
+        <div className="graph-actions">
+          <button
+            type="button"
+            className="secondary mini-btn"
+            title="Drop all scenes with over 30% clouds in this view"
+            onClick={() => scene.dropCloudyFrames(0.3)}
+          >
+            ☁️ Drop Cloudy (&gt;30%)
+          </button>
+          <button
+            type="button"
+            className="secondary mini-btn"
+            title="Restore all removed dates"
+            onClick={() => scene.restoreAllFrames()}
+          >
+            ↺ Restore All
+          </button>
+          <button
+            type="button"
+            className="secondary mini-btn close-btn"
+            title="Close graph"
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+
+      <div className="graph-svg-wrap">
+        <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="graph-svg">
+          <defs>
+            <linearGradient id="vegAreaGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#10b981" stopOpacity="0.4" />
+              <stop offset="100%" stopColor="#10b981" stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+
+          {/* Guidelines */}
+          <line x1={padLeft} y1={padTop} x2={width - padRight} y2={padTop} stroke="rgba(255,255,255,0.08)" strokeDasharray="3,3" />
+          <line x1={padLeft} y1={getY(0.5)} x2={width - padRight} y2={getY(0.5)} stroke="rgba(255,255,255,0.08)" strokeDasharray="3,3" />
+          <line x1={padLeft} y1={thresholdY} x2={width - padRight} y2={thresholdY} stroke="rgba(16, 185, 129, 0.3)" strokeDasharray="4,4" />
+          <line x1={padLeft} y1={padTop + plotHeight} x2={width - padRight} y2={padTop + plotHeight} stroke="rgba(255,255,255,0.15)" />
+
+          {/* Y Axis Labels */}
+          <text x={padLeft - 6} y={padTop + 4} textAnchor="end" fill="rgba(255,255,255,0.4)" fontSize="9" fontFamily="monospace">1.0</text>
+          <text x={padLeft - 6} y={getY(0.5) + 3} textAnchor="end" fill="rgba(255,255,255,0.4)" fontSize="9" fontFamily="monospace">0.5</text>
+          <text x={padLeft - 6} y={thresholdY + 3} textAnchor="end" fill="#10b981" fontSize="9" fontFamily="monospace">0.25</text>
+          <text x={padLeft - 6} y={padTop + plotHeight + 3} textAnchor="end" fill="rgba(255,255,255,0.4)" fontSize="9" fontFamily="monospace">0.0</text>
+
+          {/* Filled Area & Line */}
+          {areaD && <path d={areaD} fill="url(#vegAreaGradient)" />}
+          {pathD && <path d={pathD} fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
+
+          {/* Vertical cursor for current frame */}
+          <line
+            x1={getX(state.index)}
+            y1={padTop}
+            x2={getX(state.index)}
+            y2={padTop + plotHeight}
+            stroke="#58a6ff"
+            strokeWidth="1.5"
+            strokeDasharray="3,2"
+          />
+
+          {/* Interactive Date Points */}
+          {state.frames.map((frame, i) => {
+            const x = getX(i);
+            const stats = state.viewVegetation[i];
+            const cloud = state.viewCloud[i];
+            const hasStats = stats != null;
+            const y = hasStats ? getY(stats.meanNdvi) : padTop + plotHeight;
+            const isCurrent = i === state.index;
+            const isCloudy = cloud != null && cloud > 0.3;
+            const isExcluded = state.excluded[i];
+
+            let fillColor = '#10b981';
+            if (isExcluded) fillColor = 'rgba(255,255,255,0.2)';
+            else if (isCloudy) fillColor = '#94a3b8';
+
+            return (
+              <g
+                key={frame.id}
+                className="graph-point-group"
+                cursor="pointer"
+                onClick={() => scene.seek(i)}
+                onMouseEnter={() => setHoveredIdx(i)}
+                onMouseLeave={() => setHoveredIdx(null)}
+              >
+                <rect x={x - 8} y={padTop} width={16} height={plotHeight + 15} fill="transparent" />
+                {isCurrent && (
+                  <circle cx={x} cy={y} r="7" fill="none" stroke="#58a6ff" strokeWidth="1.5" />
+                )}
+                {hasStats ? (
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r={isCurrent ? '4.5' : '3'}
+                    fill={fillColor}
+                    stroke={isCurrent ? '#ffffff' : 'rgba(0,0,0,0.5)'}
+                    strokeWidth="1"
+                  />
+                ) : (
+                  <circle
+                    cx={x}
+                    cy={padTop + plotHeight}
+                    r="2"
+                    fill="rgba(255,255,255,0.2)"
+                  />
+                )}
+              </g>
+            );
+          })}
+        </svg>
+
+        {hoveredItem && (
+          <div
+            className="graph-tooltip"
+            style={{
+              left: `${Math.min(85, Math.max(15, (getX(hoveredItem.index) / width) * 100))}%`,
+            }}
+          >
+            <strong>{hoveredItem.frame.datetime.slice(0, 10)}</strong>
+            {hoveredItem.stats ? (
+              <span> · NDVI: <strong>{hoveredItem.stats.meanNdvi.toFixed(2)}</strong> ({Math.round(hoveredItem.stats.vegetationPercent)}% green)</span>
+            ) : (
+              <span> · Loading…</span>
+            )}
+            {hoveredItem.cloud != null && (
+              <span> · {Math.round(hoveredItem.cloud * 100)}% cloud</span>
+            )}
+            {hoveredItem.excluded && <span className="tooltip-tag warn"> · Dropped</span>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Video-style controls for a locked-view timelapse. The strip under the scrub
  * bar is one segment per date: it fills as each frame arrives, and clicking a
  * segment removes that date from playback (click again to restore).
  */
 function TimelapsePlayer({ scene, state }: { scene: MapScene; state: TimelapseState }): React.JSX.Element {
+  const [showGraph, setShowGraph] = useState(true);
   const count = state.frames.length;
   const current = state.frames[state.index];
   const removed = state.excluded.filter(Boolean).length;
@@ -260,71 +475,88 @@ function TimelapsePlayer({ scene, state }: { scene: MapScene; state: TimelapseSt
   }, [scene]);
 
   return (
-    <div className="player">
-      <button
-        type="button"
-        className="play"
-        aria-label={state.playing ? 'Pause' : 'Play'}
-        onClick={() => (state.playing ? scene.pause() : scene.play())}
-      >
-        {state.playing ? '❚❚' : '▶'}
-      </button>
-      <div className="scrub">
-        <input
-          type="range"
-          min={0}
-          max={Math.max(0, count - 1)}
-          step={1}
-          value={state.index}
-          aria-label="Timelapse position"
-          onChange={(e) => scene.seek(Number(e.target.value))}
+    <div className="player-container">
+      {showGraph && (
+        <VegetationGraph
+          scene={scene}
+          state={state}
+          onClose={() => setShowGraph(false)}
         />
-        <div className="buffer" role="group" aria-label="Dates: click to remove or restore">
-          {state.status.map((s, i) => {
-            const frame = state.frames[i];
-            const off = state.excluded[i];
-            const label = `${frame.datetime.slice(0, 10)} · ${cloudText(state, i)}${state.autoRemoved[i] ? ' · auto-removed (cloudy)' : ''}`;
-            return (
-              <button
-                key={frame.id}
-                type="button"
-                className={`segment ${s}${off ? ' excluded' : ''}${i === state.index ? ' current' : ''}`}
-                title={`${label} — click to ${off ? 'restore' : 'remove'}`}
-                aria-label={`${label}, ${off ? 'removed, click to restore' : 'click to remove'}`}
-                aria-pressed={off}
-                onClick={() => scene.toggleFrame(i)}
-              />
-            );
-          })}
+      )}
+      <div className="player">
+        <button
+          type="button"
+          className="play"
+          aria-label={state.playing ? 'Pause' : 'Play'}
+          onClick={() => (state.playing ? scene.pause() : scene.play())}
+        >
+          {state.playing ? '❚❚' : '▶'}
+        </button>
+        <div className="scrub">
+          <input
+            type="range"
+            min={0}
+            max={Math.max(0, count - 1)}
+            step={1}
+            value={state.index}
+            aria-label="Timelapse position"
+            onChange={(e) => scene.seek(Number(e.target.value))}
+          />
+          <div className="buffer" role="group" aria-label="Dates: click to remove or restore">
+            {state.status.map((s, i) => {
+              const frame = state.frames[i];
+              const off = state.excluded[i];
+              const label = `${frame.datetime.slice(0, 10)} · ${cloudText(state, i)}${state.autoRemoved[i] ? ' · auto-removed (cloudy)' : ''}`;
+              return (
+                <button
+                  key={frame.id}
+                  type="button"
+                  className={`segment ${s}${off ? ' excluded' : ''}${i === state.index ? ' current' : ''}`}
+                  title={`${label} — click to ${off ? 'restore' : 'remove'}`}
+                  aria-label={`${label}, ${off ? 'removed, click to restore' : 'click to remove'}`}
+                  aria-pressed={off}
+                  onClick={() => scene.toggleFrame(i)}
+                />
+              );
+            })}
+          </div>
         </div>
+        <span className="frame-date">
+          <strong className={currentRemoved ? 'struck' : undefined}>{current?.datetime.slice(0, 10)}</strong> · {state.index + 1}/{count}
+          {current && ` · ${cloudText(state, state.index)}`}
+          {state.autoRemoved[state.index] && <span className="dim"> · auto-removed</span>}
+          {removed > 0 && <span className="dim"> · {removed} removed</span>}
+          {state.buffering && <span className="dim"> · buffering…</span>}
+          {state.status[state.index] === 'failed' && <span className="warn"> · unavailable</span>}
+        </span>
+        <button
+          type="button"
+          className={`secondary graph-toggle-btn${showGraph ? ' active' : ''}`}
+          title="Toggle vegetation trend graph"
+          onClick={() => setShowGraph(!showGraph)}
+        >
+          📈 Graph
+        </button>
+        <button
+          type="button"
+          className="secondary remove-date"
+          title="Delete key"
+          onClick={() => scene.toggleFrame(state.index)}
+        >
+          {currentRemoved ? 'Restore date' : 'Remove date'}
+        </button>
+        <select
+          value={state.fps}
+          aria-label="Playback speed"
+          onChange={(e) => scene.setPlayback({ fps: Number(e.target.value) })}
+        >
+          {[1, 2, 4, 8, 12].map((fps) => <option key={fps} value={fps}>{fps} fps</option>)}
+        </select>
+        <label className="loop">
+          <input type="checkbox" checked={state.loop} onChange={(e) => scene.setPlayback({ loop: e.target.checked })} />
+          Loop
+        </label>
       </div>
-      <span className="frame-date">
-        <strong className={currentRemoved ? 'struck' : undefined}>{current?.datetime.slice(0, 10)}</strong> · {state.index + 1}/{count}
-        {current && ` · ${cloudText(state, state.index)}`}
-        {state.autoRemoved[state.index] && <span className="dim"> · auto-removed</span>}
-        {removed > 0 && <span className="dim"> · {removed} removed</span>}
-        {state.buffering && <span className="dim"> · buffering…</span>}
-        {state.status[state.index] === 'failed' && <span className="warn"> · unavailable</span>}
-      </span>
-      <button
-        type="button"
-        className="secondary remove-date"
-        title="Delete key"
-        onClick={() => scene.toggleFrame(state.index)}
-      >
-        {currentRemoved ? 'Restore date' : 'Remove date'}
-      </button>
-      <select
-        value={state.fps}
-        aria-label="Playback speed"
-        onChange={(e) => scene.setPlayback({ fps: Number(e.target.value) })}
-      >
-        {[1, 2, 4, 8, 12].map((fps) => <option key={fps} value={fps}>{fps} fps</option>)}
-      </select>
-      <label className="loop">
-        <input type="checkbox" checked={state.loop} onChange={(e) => scene.setPlayback({ loop: e.target.checked })} />
-        Loop
-      </label>
     </div>
   );
 }
@@ -365,6 +597,7 @@ function Sidebar({
 }): React.JSX.Element {
   const [client] = useState(() => new RasterClient());
   const [config, setConfig] = useState<DatasetConfig | null>(null);
+  const [maxCloud, setMaxCloud] = useState<number>(50);
   const searchRun = useRef(0);
   const [finding, setFinding] = useState<{ busy: boolean; message: string | null; error: boolean }>({ busy: false, message: null, error: false });
   const timelapse = useTimelapse(scene);
@@ -412,10 +645,8 @@ function Sidebar({
         setFinding({ busy: false, error: true, message: `Sentinel-2 data starts on ${MISSION_START}; pick dates from then to today.` });
         return;
       }
-      // No cloud-cover filter: clouds are masked per pixel in every frame, and
-      // a scene's cloud figure describes its whole ~110 km granule, not the
-      // view -- a "71%" date can be clear where the user is looking.
-      const selection = selectFramesForView(scenes, view, 100);
+      // Filter scenes by the user's selected maximum cloud cover threshold
+      const selection = selectFramesForView(scenes, view, maxCloud);
       let frames = selection.frames;
       const skipped = [
         selection.partial > 0 ? `${selection.partial} only partly imaged this view` : '',
@@ -424,11 +655,14 @@ function Sidebar({
         setFinding({
           busy: false,
           error: true,
-          message: `No complete dates for this view between ${dates.from} and ${dates.to}${skipped ? ` (${skipped})` : ''}. Try moving the view slightly or widening the dates.`,
+          message: `No complete dates for this view between ${dates.from} and ${dates.to} with <=${maxCloud}% clouds${skipped ? ` (${skipped})` : ''}. Try increasing the cloud limit, moving the view, or widening the dates.`,
         });
         return;
       }
       let note = `${frames.length} date${frames.length === 1 ? '' : 's'} found.${skipped ? ` Skipped: ${skipped}.` : ''}`;
+      if (maxCloud < 100) {
+        note += ` Filtered out scenes with >${maxCloud}% clouds.`;
+      }
       if (frames.length > MAX_TIMELAPSE_FRAMES) {
         // Even time slots, clearest date in each: no uneven jumps, fewer clouds.
         const found = frames.length;
@@ -476,6 +710,10 @@ function Sidebar({
         <h2>Timelapse</h2>
         {timelapse.active ? (
           <>
+            <div className="frozen-banner">
+              <span>🔒 <strong>Fixed Map Bounds</strong></span>
+              <p className="small dim">Map viewport is frozen to this exact location during timeline playback. Click &quot;Exit timelapse&quot; to unlock and explore.</p>
+            </div>
             <p className="small">
               {timelapse.frames.length - timelapse.excluded.filter(Boolean).length} of {timelapse.frames.length} dates · {dates.from} → {dates.to}
             </p>
@@ -492,6 +730,24 @@ function Sidebar({
                 <option value="0.1">More than 10% of the view cloudy</option>
               </select>
             </label>
+            <div className="cloud-action-row">
+              <button
+                type="button"
+                className="secondary mini-btn"
+                title="Drop all scenes with over 30% clouds in this view"
+                onClick={() => scene?.dropCloudyFrames(0.3)}
+              >
+                ☁️ Drop cloudy (&gt;30%)
+              </button>
+              <button
+                type="button"
+                className="secondary mini-btn"
+                title="Restore all removed dates"
+                onClick={() => scene?.restoreAllFrames()}
+              >
+                ↺ Restore all
+              </button>
+            </div>
             {autoRemovedCount > 0 && (
               <p className="small dim">{autoRemovedCount} cloudy frame{autoRemovedCount === 1 ? '' : 's'} removed, measured from each frame's own cloud mask. Click a hatched segment to bring one back.</p>
             )}
@@ -512,6 +768,16 @@ function Sidebar({
                 <input type="date" value={dates.to} min={dates.from} max={new Date().toISOString().slice(0, 10)} onChange={(e) => onDatesChange({ ...dates, to: e.target.value })} />
               </label>
             </div>
+            <label>
+              Cloud filter (scene)
+              <select value={maxCloud} onChange={(e) => setMaxCloud(Number(e.target.value))}>
+                <option value={20}>Under 20% clouds (Very clear)</option>
+                <option value={40}>Under 40% clouds</option>
+                <option value={50}>Under 50% clouds (Default)</option>
+                <option value={70}>Under 70% clouds</option>
+                <option value={100}>Any (include cloudy scenes)</option>
+              </select>
+            </label>
             <button type="button" className="primary" disabled={!scene || finding.busy || tooWide} onClick={() => void play()}>
               {finding.busy ? 'Finding dates…' : '▶ Play timelapse'}
             </button>
@@ -672,6 +938,16 @@ function downloadAnalysis(value: RegionStatsResponse, format: 'json' | 'csv'): v
 }
 
 function Legend({ layer }: { layer: RenderLayer }): React.JSX.Element | null {
+  if (layer === 'vegetation') {
+    return (
+      <div className="legend vegetation-legend">
+        <div className="veg-legend-items">
+          <span className="veg-badge green-badge">● Living Vegetation (NDVI ≥ 0.25)</span>
+          <span className="veg-badge gray-badge">● Non-Living / Bare Soil / Built (&lt; 0.25)</span>
+        </div>
+      </div>
+    );
+  }
   if (layer === 'ndvi') {
     return <RampLegend kind="ndvi" entries={ndviLegend()} />;
   }
@@ -827,7 +1103,7 @@ function readSharedState(): SharedState {
     return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : value;
   };
   const isDate = (value: string | null): value is string => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '');
-  const layers: RenderLayer[] = ['natural', 'false', 'ndvi', 'band'];
+  const layers: RenderLayer[] = ['natural', 'false', 'ndvi', 'band', 'vegetation'];
   const bands: RampBand[] = ['red', 'green', 'blue', 'nir'];
   const layer = p.get('layer') as RenderLayer | null;
   const band = p.get('band') as RampBand | null;

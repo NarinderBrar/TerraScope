@@ -14,7 +14,7 @@ struct RenderUniforms {
   viewport_width: f32,
   viewport_height: f32,
   /// 0 = natural colour, 1 = NDVI, 2 = NDVI difference, 3 = single band,
-  /// 4 = false colour (NIR/red/green).
+  /// 4 = false colour (NIR/red/green), 5 = vegetation focus (green vs gray).
   layer: u32,
   /// 0..1 divider position for the swipe, in viewport x.
   swipe: f32,
@@ -241,6 +241,31 @@ fn shade(uv: vec2<f32>, layer: u32, useSecond: bool) -> vec3<f32> {
         return NO_DATA;
       }
       return ndviRamp((value - params.ndvi_min) / max(0.01, params.ndvi_max - params.ndvi_min));
+    }
+    // Vegetation focus: living vegetation in vibrant green, non-living in monochrome gray.
+    case 5u: {
+      if (!coverageBit(pixel)) {
+        return NO_DATA;
+      }
+      var bands: vec4<f32>;
+      var valid: bool;
+      var ndviVal: f32;
+      if (useSecond) {
+        bands = textureLoad(source_b, coord, 0);
+        valid = indexValidBitB(pixel);
+        ndviVal = ndvi_b[pixel];
+      } else {
+        bands = textureLoad(source_a, coord, 0);
+        valid = indexValidBitA(pixel);
+        ndviVal = ndvi_a[pixel];
+      }
+      let rgb = vec3<f32>(displayEncode(bands.x), displayEncode(bands.y), displayEncode(bands.z));
+      let gray = dot(rgb, vec3<f32>(0.299, 0.587, 0.114));
+      // Living vegetation threshold (NDVI >= 0.25).
+      if (valid && ndviVal >= 0.25) {
+        return vec3<f32>(rgb.r * 0.4, min(1.0, rgb.g * 1.35 + 0.05), rgb.b * 0.4);
+      }
+      return vec3<f32>(gray, gray, gray);
     }
     // Single band.
     default: {
