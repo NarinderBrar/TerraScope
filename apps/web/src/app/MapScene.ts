@@ -25,14 +25,15 @@ import { RasterClient, RasterError, type RequestProgress, type TileDescriptor } 
 import type { NumericTile, Scene } from '@terrascope/contracts';
 import { lonLatToWorldPx, TILE_SIZE } from '@terrascope/contracts';
 import { computeNdvi } from '../analysis/AnalysisPipelines';
-import { planFrame, timelineWindow, type FramePlan, type FrameScene } from './timelapsePlan';
+import type { FrameScene } from './comparePlan';
+
+const TILE_RETRY_MS = 12_000;
 import { TileRequestScheduler } from '../map/TileRequestScheduler';
 
 /** The profile every view requests. Only this one has all four bands. */
 const PROFILE = 'rgbn';
-/** Delay before a tile that failed for a reason other than 404 is requested again. */
-const TILE_RETRY_MS = 10_000;
-const MAX_CONCURRENT_TILE_REQUESTS = 6;
+/** Stream tiles one by one so progress updates smoothly and pairs resolve in order. */
+const MAX_CONCURRENT_TILE_REQUESTS = 1;
 
 export interface MapStats {
   resident: number;
@@ -136,12 +137,9 @@ export class MapScene {
   /** Camera and viewport together, replaced whenever either changes. The DOM basemap follows this. */
   #view: MapView = { camera: this.#camera, viewport: this.#viewport };
 
-  #timelapse: TimelapseSession | null = null;
-  /** Auto-remove frames cloudier than this fraction of the view; null = off. Kept across timelapses. */
-  #autoCloud: number | null = DEFAULT_AUTO_CLOUD;
-  #timelapseSnapshot: TimelapseState = IDLE_TIMELAPSE;
-  /** Frame index actually on screen: the current one, or its nearest stand-in. */
-  #drawnFrame: number | null = null;
+  #compare: CompareSession | null = null;
+  #compareSnapshot: CompareState = IDLE_COMPARE;
+  #loadedSecond = new Set<string>();
 
   constructor(canvas: HTMLCanvasElement, client: RasterClient = new RasterClient()) {
     this.#canvas = canvas;
@@ -179,6 +177,10 @@ export class MapScene {
     return this.#sceneB;
   }
 
+  get gpuContext(): GpuContext | null {
+    return this.#context;
+  }
+
   get gpuInfo(): GpuContext['info'] | null {
     return this.#context?.info ?? null;
   }
@@ -187,12 +189,13 @@ export class MapScene {
     return this.#view;
   }
 
-  get timelapse(): TimelapseState {
-    return this.#timelapseSnapshot;
+  get compare(): CompareState {
+    return this.#compareSnapshot;
   }
 
+  /** A comparison is loaded, so both dates are on screen. */
   get canCompare(): boolean {
-    return this.#scene != null;
+    return this.#compare != null;
   }
 
   // ---- lifecycle ---------------------------------------------------------
@@ -237,7 +240,7 @@ export class MapScene {
   dispose(): void {
     this.#disposed = true;
     this.#stop();
-    this.stopTimelapse();
+    this.stopCompare();
     this.#pending.clear();
     for (const tile of this.#gpu.values()) this.#renderer?.destroyTile(tile);
     this.#gpu.clear();
@@ -246,456 +249,94 @@ export class MapScene {
     this.#context?.destroy();
   }
 
-  // ---- scene selection ---------------------------------------------------
+  // ---- comparison --------------------------------------------------------
 
-  /** Load a primary date. Clears every tile, because tile bytes are date-specific. */
-  async setScene(scene: Scene): Promise<void> {
-    this.#scene = scene;
+  /**
+   * Compare two dates across the current view.
+   *
+   * Both are read on one grid (see `planFrame`) so the swipe seam lands on the
+   * same ground on both sides and the difference layer is exact. A is the
+   * earlier date, so dragging the divider right always moves forward in time.
+   */
+  startCompare(pair: { a: FrameScene; b: FrameScene; fromGapDays: number; toGapDays: number }): void {
+    this.stopCompare();
+    this.#pending.clear();
+    this.#clearTiles();
+    this.#scene = pair.a;
+    this.#sceneB = pair.b;
+    this.#compare = {
+      a: pair.a,
+      b: pair.b,
+      fromGapDays: pair.fromGapDays,
+      toGapDays: pair.toGapDays,
+      statusA: 'loading',
+      statusB: 'loading',
+    };
     this.#sceneStartedAt = performance.now();
     this.#firstImageMs = null;
+    // A difference is one image of two dates and cannot be split down the
+    // middle, so it is the one layer the swipe steps aside for.
+    this.#settings = { ...this.#settings, swipeEnabled: this.#settings.layer !== 'difference' };
+    this.#publishCompare();
+    this.#invalidate();
+  }
+
+  /** Release both dates and return to the plain map. */
+  stopCompare(): void {
+    const compare = this.#compare;
+    if (!compare) return;
+    this.#compare = null;
+    this.#scene = null;
+    this.#sceneB = null;
     this.#clearTiles();
-    this.#setSceneB(this.#settings.swipeEnabled ? this.#sceneB : null);
+    this.#settings = { ...this.#settings, swipeEnabled: false };
+    this.#publishCompare();
     this.#invalidate();
   }
 
-  /** Load a comparison date, or clear it with `null`. */
-  async setSceneB(scene: Scene | null): Promise<void> {
-    // Comparison resources are attached to A's resident tiles. They must be
-    // released before changing B or a tile outside the new viewport can keep
-    // the previous acquisition alive indefinitely.
-    this.#pending.clear();
-    this.#failed.clear();
-    for (const tile of this.#gpu.values()) this.#renderer?.releaseSecondDate(tile);
-    this.#setSceneB(scene);
+  /**
+   * Move the swipe divider, 0 at the left edge to 1 at the right.
+   */
+  setSwipe(fraction: number): void {
+    this.#settings = { ...this.#settings, swipe: Math.min(1, Math.max(0, fraction)) };
     this.#invalidate();
+    this.#emit();
   }
 
-  #setSceneB(scene: Scene | null): void {
-    // A/B must not be the same acquisition, or the difference is identically
-    // zero and the view looks broken rather than empty.
-    if (scene && this.#scene && scene.id === this.#scene.id) scene = null;
-    this.#sceneB = scene;
-    this.#settings = { ...this.#settings, swipeEnabled: scene != null && this.#settings.layer !== 'difference' ? this.#settings.swipeEnabled : false };
+  #publishCompare(): void {
+    const compare = this.#compare;
+    this.#compareSnapshot = compare
+      ? {
+          active: true,
+          a: compare.a,
+          b: compare.b,
+          statusA: compare.statusA,
+          statusB: compare.statusB,
+          refreshing: false,
+          fromGapDays: compare.fromGapDays,
+          toGapDays: compare.toGapDays,
+        }
+      : IDLE_COMPARE;
+    this.#emit();
   }
+
+  // ---- settings ------------------------------------------------------------
 
   updateSettings(patch: Partial<RenderSettings>): void {
     const qualityChanged = patch.qualityMask != null && patch.qualityMask !== this.#settings.qualityMask;
     const next = { ...this.#settings, ...patch };
-    // Swipe and difference are mutually exclusive ways of using two dates: the
-    // shader cannot split a difference image down the middle, so asking for
-    // both silently drops the swipe.
-    if (next.layer === 'difference' && next.swipeEnabled) next.swipeEnabled = false;
-    if (next.swipeEnabled && !this.#sceneB) next.swipeEnabled = false;
-    if (!next.swipeEnabled && next.layer === 'difference' && !this.#sceneB) next.layer = 'ndvi';
+    // A comparison is shown as a swipe whichever layer is chosen -- that is the
+    // whole point of loading two dates. The difference layer is the one view
+    // that cannot be split down the middle, so it takes both dates at once and
+    // the swipe steps aside until another layer is picked.
+    if (next.layer === 'difference') next.swipeEnabled = false;
+    else if (this.#compare) next.swipeEnabled = true;
     this.#settings = next;
     if (qualityChanged) {
+      // The mask is applied server-side, so both loaded dates are now stale.
       this.#clearTiles();
-      // The mask is applied server-side, so loaded frames are now stale.
-      // Same frames, same locked view: start over with the new policy.
-      if (this.#timelapse) this.startTimelapse(this.#timelapse.frames);
     }
     this.#invalidate();
-  }
-
-  // ---- timelapse ---------------------------------------------------------
-
-  /**
-   * Lock the view and play `frames` (already selected, oldest first).
-   *
-   * Every frame is read for exactly the current view, so the camera is frozen
-   * until `stopTimelapse`. Tile requests in flight are dropped: on a slow link
-   * they would only compete with the first frame for bandwidth.
-   */
-  startTimelapse(frames: readonly FrameScene[]): void {
-    if (frames.length === 0) return;
-    this.stopTimelapse();
-    this.#pending.clear();
-    // Frames carry one date each; swipe and difference need two.
-    this.#setSceneB(null);
-    if (this.#settings.layer === 'difference') this.#settings = { ...this.#settings, layer: 'ndvi' };
-    this.#settings = { ...this.#settings, swipeEnabled: false };
-
-    this.#timelapse = {
-      frames: [...frames],
-      status: frames.map(() => 'idle' as FrameStatus),
-      excluded: frames.map(() => false),
-      viewCloud: frames.map(() => null),
-      viewVegetation: frames.map(() => null),
-      autoRemoved: frames.map(() => false),
-      manual: frames.map(() => false),
-      userSeeked: false,
-      plan: planFrame(this.viewBounds(), this.#viewport),
-      tiles: new Map(),
-      loading: new Set(),
-      controllers: new Map(),
-      index: 0,
-      direction: 1,
-      playing: false,
-      fps: 4,
-      loop: true,
-      buffering: false,
-      lastStep: 0,
-    };
-    this.#sceneStartedAt = performance.now();
-    this.#firstImageMs = null;
-    this.#pumpFrames();
-    this.#publishTimelapse();
-    this.#invalidate();
-  }
-
-  /** Release every frame and unlock the view. */
-  stopTimelapse(): void {
-    const timelapse = this.#timelapse;
-    if (!timelapse) return;
-    for (const controller of timelapse.controllers.values()) controller.abort();
-    for (const tile of timelapse.tiles.values()) this.#renderer?.destroyTile(tile);
-    this.#timelapse = null;
-    this.#drawnFrame = null;
-    this.#publishTimelapse();
-    this.#invalidate();
-  }
-
-  play(): void {
-    const timelapse = this.#timelapse;
-    if (!timelapse) return;
-    if (!timelapse.loop && timelapse.index >= timelapse.frames.length - 1) timelapse.index = 0;
-    timelapse.userSeeked = true;
-    timelapse.playing = true;
-    timelapse.lastStep = performance.now();
-    this.#pumpFrames();
-    this.#publishTimelapse();
-  }
-
-  pause(): void {
-    const timelapse = this.#timelapse;
-    if (!timelapse) return;
-    timelapse.playing = false;
-    timelapse.buffering = false;
-    this.#publishTimelapse();
-  }
-
-  /** Jump to a frame. Pauses, and fetches that frame next if it is not loaded. */
-  seek(index: number): void {
-    const timelapse = this.#timelapse;
-    if (!timelapse) return;
-    const next = Math.max(0, Math.min(timelapse.frames.length - 1, Math.round(index)));
-    if (next !== timelapse.index) timelapse.direction = next > timelapse.index ? 1 : -1;
-    timelapse.index = next;
-    timelapse.userSeeked = true;
-    timelapse.playing = false;
-    timelapse.buffering = false;
-    this.#pumpFrames();
-    this.#publishTimelapse();
-    // Paused with everything loaded, the loop is idle and draws only when
-    // invalidated -- without this the label moves and the picture does not.
-    this.#invalidate();
-  }
-
-  setPlayback(options: { fps?: number; loop?: boolean }): void {
-    const timelapse = this.#timelapse;
-    if (!timelapse) return;
-    if (options.fps != null) timelapse.fps = Math.max(0.5, Math.min(30, options.fps));
-    if (options.loop != null) timelapse.loop = options.loop;
-    this.#pumpFrames();
-    this.#publishTimelapse();
-  }
-
-  /**
-   * Remove a date from the timelapse, or restore it.
-   *
-   * A toggle rather than a delete, so a mis-click is one more click to undo.
-   * A removed date is skipped by playback and not fetched while removed; one
-   * already loaded stays on the GPU, so restoring it is instant.
-   */
-  toggleFrame(index: number): void {
-    const timelapse = this.#timelapse;
-    if (!timelapse || index < 0 || index >= timelapse.frames.length) return;
-    timelapse.excluded[index] = !timelapse.excluded[index];
-    timelapse.manual[index] = true;
-    timelapse.autoRemoved[index] = false;
-    this.#pumpFrames();
-    this.#publishTimelapse();
-    this.#invalidate();
-  }
-
-  /**
-   * Set the cloud rule: frames with more than `threshold` of the view under
-   * cloud are removed automatically (null turns it off). Re-applied to every
-   * loaded frame, except dates the user has toggled by hand.
-   */
-  setAutoCloud(threshold: number | null): void {
-    this.#autoCloud = threshold;
-    const timelapse = this.#timelapse;
-    if (timelapse) {
-      timelapse.frames.forEach((_, i) => this.#applyCloudRule(timelapse, i));
-      this.#pumpFrames();
-      this.#publishTimelapse();
-      this.#invalidate();
-    }
-  }
-
-  /**
-   * Explicitly drop/remove all frames exceeding the specified cloud threshold (default 0.3 = 30%).
-   */
-  dropCloudyFrames(threshold = 0.3): void {
-    const timelapse = this.#timelapse;
-    if (!timelapse) return;
-    for (let i = 0; i < timelapse.frames.length; i += 1) {
-      const cloud = timelapse.viewCloud[i] ?? (timelapse.frames[i].cloudCover != null ? timelapse.frames[i].cloudCover! / 100 : null);
-      if (cloud != null && cloud > threshold) {
-        timelapse.excluded[i] = true;
-        timelapse.manual[i] = true;
-      }
-    }
-    if (timelapse.excluded[timelapse.index]) {
-      const kept = nearestKept(timelapse, timelapse.index);
-      if (kept != null) timelapse.index = kept;
-    }
-    this.#pumpFrames();
-    this.#publishTimelapse();
-    this.#invalidate();
-  }
-
-  /**
-   * Restore all frames to playback.
-   */
-  restoreAllFrames(): void {
-    const timelapse = this.#timelapse;
-    if (!timelapse) return;
-    for (let i = 0; i < timelapse.frames.length; i += 1) {
-      timelapse.excluded[i] = false;
-      timelapse.manual[i] = true;
-      timelapse.autoRemoved[i] = false;
-    }
-    this.#pumpFrames();
-    this.#publishTimelapse();
-    this.#invalidate();
-  }
-
-  #applyCloudRule(timelapse: TimelapseSession, index: number): void {
-    const cloud = timelapse.viewCloud[index];
-    if (timelapse.manual[index] || cloud == null) return;
-    const remove = this.#autoCloud != null && cloud > this.#autoCloud;
-    if (remove && !timelapse.excluded[index]) {
-      timelapse.excluded[index] = true;
-      timelapse.autoRemoved[index] = true;
-      // Do not leave a paused view parked on a frame that just disappeared
-      // from the timeline; move to the nearest kept one.
-      if (timelapse.index === index && !timelapse.playing && !timelapse.userSeeked) {
-        const kept = nearestKept(timelapse, index);
-        if (kept != null) timelapse.index = kept;
-      }
-    } else if (!remove && timelapse.autoRemoved[index]) {
-      timelapse.excluded[index] = false;
-      timelapse.autoRemoved[index] = false;
-    }
-  }
-
-  /**
-   * Keep up to FRAME_CONCURRENCY frames in flight, in `order`.
-   *
-   * Until the first frame is on screen it travels alone: on a
-   * bandwidth-limited link, parallel frames would each arrive later.
-   */
-  #pumpFrames(): void {
-    const timelapse = this.#timelapse;
-    if (!timelapse) return;
-    const wanted = timelineWindow(
-      timelapse.frames.length,
-      timelapse.index,
-      timelapse.direction,
-      timelapse.loop,
-      timelapse.excluded,
-    );
-    const wantedSet = new Set(wanted);
-    for (const [index, controller] of timelapse.controllers) {
-      if (wantedSet.has(index)) continue;
-      controller.abort();
-      timelapse.controllers.delete(index);
-      timelapse.loading.delete(index);
-      if (timelapse.status[index] === 'loading') timelapse.status[index] = 'idle';
-    }
-    const anyReady = timelapse.status.includes('ready');
-    while (timelapse.loading.size < (anyReady ? FRAME_CONCURRENCY : 1)) {
-      const next = wanted.find((i) => timelapse.status[i] === 'idle');
-      if (next === undefined) return;
-      this.#loadFrame(timelapse, next);
-    }
-  }
-
-  #loadFrame(timelapse: TimelapseSession, index: number): void {
-    const scene = timelapse.frames[index];
-    const controller = new AbortController();
-    timelapse.controllers.set(index, controller);
-    timelapse.status[index] = 'loading';
-    timelapse.loading.add(index);
-    void this.client
-      .frame(
-        {
-          collection: scene.collection,
-          itemId: scene.id,
-          profile: PROFILE,
-          bounds3857: timelapse.plan.bounds3857,
-          width: timelapse.plan.width,
-          height: timelapse.plan.height,
-          qualityMask: this.#settings.qualityMask,
-          mosaic: scene.mosaicIds,
-        },
-        { signal: controller.signal },
-      )
-      .then((tile) => {
-        timelapse.loading.delete(index);
-        if (timelapse.controllers.get(index) === controller) timelapse.controllers.delete(index);
-        if (timelapse !== this.#timelapse || controller.signal.aborted) return;
-        const renderer = this.#renderer;
-        const ndvi = this.#ndvi;
-        if (!renderer || !ndvi) return;
-        const analysis = this.#analysis(tile);
-        ndvi.runNdvi(analysis);
-        timelapse.tiles.set(index, renderer.upload(frameKey(index), tile, analysis));
-        timelapse.status[index] = 'ready';
-        this.#evictFrames(timelapse);
-        timelapse.viewCloud[index] = viewCloudFraction(tile);
-        timelapse.viewVegetation[index] = viewVegetationStats(tile);
-        this.#applyCloudRule(timelapse, index);
-        // Until the user takes over, rest on the earliest date still in the
-        // timeline. The first frame loads alone and may be removed as cloudy;
-        // the next kept one to arrive is often the last date (fetched early
-        // for scrubbing), so keep re-settling as earlier ones land.
-        if (!timelapse.playing && !timelapse.userSeeked) {
-          const earliest = timelapse.status.findIndex((st, i) => st === 'ready' && !timelapse.excluded[i]);
-          if (earliest >= 0) timelapse.index = earliest;
-        }
-        if (this.#firstImageMs === null) {
-          this.#firstImageMs = performance.now() - this.#sceneStartedAt;
-          console.info(`[TerraScope] first timelapse frame in ${this.#firstImageMs.toFixed(0)} ms (${scene.datetime.slice(0, 10)})`);
-        }
-        this.#pumpFrames();
-        this.#publishTimelapse();
-        this.#invalidate();
-      })
-      .catch((error: unknown) => {
-        timelapse.loading.delete(index);
-        if (timelapse.controllers.get(index) === controller) timelapse.controllers.delete(index);
-        if (timelapse !== this.#timelapse || controller.signal.aborted) return;
-        timelapse.status[index] = 'failed';
-        this.#lastTileError = `Frame ${scene.datetime.slice(0, 10)} failed: ${describe(error)}`;
-        this.#pumpFrames();
-        this.#publishTimelapse();
-        this.#invalidate();
-      });
-  }
-
-  #evictFrames(timelapse: TimelapseSession): void {
-    if (timelapse.tiles.size <= MAX_RESIDENT_FRAMES) return;
-    const keep = new Set(timelineWindow(
-      timelapse.frames.length,
-      timelapse.index,
-      timelapse.direction,
-      timelapse.loop,
-      timelapse.excluded,
-    ));
-    for (const [index, tile] of timelapse.tiles) {
-      if (timelapse.tiles.size <= MAX_RESIDENT_FRAMES) break;
-      if (keep.has(index)) continue;
-      this.#renderer?.destroyTile(tile);
-      timelapse.tiles.delete(index);
-      timelapse.status[index] = 'idle';
-      timelapse.viewCloud[index] = null;
-      timelapse.viewVegetation[index] = null;
-    }
-  }
-
-  #renderTimelapse(renderer: RasterRenderer, timelapse: TimelapseSession): void {
-    const now = performance.now();
-    // Idle when nothing moves: paused, nothing loading, nothing changed.
-    if (!this.#dirty && !timelapse.playing && timelapse.loading.size === 0) return;
-    this.#dirty = false;
-
-    if (timelapse.playing && now - timelapse.lastStep >= 1000 / timelapse.fps) {
-      this.#stepPlayback(timelapse);
-      timelapse.lastStep = now;
-    }
-
-    const drawn = nearestReady(timelapse.status, timelapse.index);
-    this.#drawnFrame = drawn;
-    const started = performance.now();
-    if (renderer.ready) {
-      const tiles: DrawTile[] = drawn == null ? [] : [{
-        key: frameKey(drawn),
-        screenX: 0,
-        screenY: 0,
-        scale: 1,
-        size: { width: this.#viewport.width, height: this.#viewport.height },
-      }];
-      renderer.draw(tiles, (key) => timelapse.tiles.get(frameIndex(key)), this.#viewport, this.#settings);
-    }
-    this.#lastFrameMs = performance.now() - started;
-    // Removed dates are not part of what is being loaded.
-    const kept = timelapse.status.filter((_, i) => !timelapse.excluded[i]);
-    this.#needTotal = kept.length;
-    this.#needDone = kept.filter((s) => s === 'ready' || s === 'failed').length;
-    this.#publishStats();
-  }
-
-  /**
-   * Advance one frame, skipping frames that failed or were removed. A frame that is not
-   * loaded yet is not skipped: playback waits for it, like a video buffering,
-   * so the sequence is never shown out of order.
-   */
-  #stepPlayback(timelapse: TimelapseSession): void {
-    const count = timelapse.frames.length;
-    for (let step = 1; step <= count; step += 1) {
-      let next = timelapse.index + step;
-      if (next >= count) {
-        if (!timelapse.loop) {
-          timelapse.playing = false;
-          timelapse.buffering = false;
-          this.#publishTimelapse();
-          return;
-        }
-        next %= count;
-      }
-      const status = timelapse.status[next];
-      if (status === 'failed' || timelapse.excluded[next]) continue;
-      if (status === 'ready') {
-        timelapse.index = next;
-        timelapse.direction = 1;
-        timelapse.buffering = false;
-        this.#pumpFrames();
-      } else {
-        timelapse.buffering = true;
-        this.#pumpFrames();
-      }
-      this.#publishTimelapse();
-      return;
-    }
-    // Every other date is removed or failed: nothing left to advance to.
-    timelapse.playing = false;
-    timelapse.buffering = false;
-    this.#publishTimelapse();
-  }
-
-  #publishTimelapse(): void {
-    const timelapse = this.#timelapse;
-    this.#timelapseSnapshot = timelapse
-      ? {
-          active: true,
-          frames: timelapse.frames,
-          status: [...timelapse.status],
-          excluded: [...timelapse.excluded],
-          viewCloud: [...timelapse.viewCloud],
-          viewVegetation: [...timelapse.viewVegetation],
-          autoRemoved: [...timelapse.autoRemoved],
-          autoCloud: this.#autoCloud,
-          index: timelapse.index,
-          playing: timelapse.playing,
-          buffering: timelapse.buffering,
-          fps: timelapse.fps,
-          loop: timelapse.loop,
-          frameSize: { width: timelapse.plan.width, height: timelapse.plan.height },
-        }
-      : IDLE_TIMELAPSE;
     this.#emit();
   }
 
@@ -718,15 +359,11 @@ export class MapScene {
   }
 
   panByPixels(dx: number, dy: number): void {
-    // A timelapse's frames are read for one exact view; moving would show
-    // them in the wrong place.
-    if (this.#timelapse) return;
     this.#camera = panBy(this.#camera, dx, dy);
     this.#invalidate();
   }
 
   zoomAroundPixels(deltaY: number, offsetX: number, offsetY: number): void {
-    if (this.#timelapse) return;
     const next = zoomAround(this.#camera, this.#viewport, deltaY, offsetX, offsetY);
     if (next === this.#camera) return;
     this.#camera = next;
@@ -734,14 +371,12 @@ export class MapScene {
   }
 
   setView(center: { lon: number; lat: number }, zoom: number): void {
-    if (this.#timelapse) return;
     this.#camera = createCamera(center, zoom);
     this.#invalidate();
   }
 
   /** Centre and zoom the camera so a geographic box fills the view. */
   fitBounds(bounds: { west: number; south: number; east: number; north: number }, maxZoom = MAX_ZOOM): void {
-    if (this.#timelapse) return;
     const nw = lonLatToWorldPx({ lon: bounds.west, lat: bounds.north }, 0);
     const se = lonLatToWorldPx({ lon: bounds.east, lat: bounds.south }, 0);
     const spanX = Math.max(1e-9, se.px - nw.px);
@@ -760,30 +395,33 @@ export class MapScene {
 
   inspectPixel(offsetX: number, offsetY: number): PixelInspection {
     const point = screenToLonLat(this.#camera, this.#viewport, offsetX, offsetY);
-    const timelapse = this.#timelapse;
-    const scene = timelapse ? timelapse.frames[timelapse.index] : this.#scene;
+    const compare = this.#compare;
+    // Report the date the user is actually looking at: whichever side of the
+    // divider this pixel falls on, not always the earlier one.
+    const onRight = offsetX >= this.#settings.swipe * this.#viewport.width;
+    const useB = compare != null
+      && this.#settings.layer !== 'difference'
+      && onRight
+      && compare.statusB === 'ready';
+    const scene = compare == null ? null : useB ? compare.b : compare.a;
     const empty = (status: PixelInspection['status']): PixelInspection => ({
       lon: point.lon, lat: point.lat, status, date: scene?.datetime ?? null,
       red: null, green: null, blue: null, nir: null, ndvi: null, qualityValid: null,
     });
-    if (timelapse) {
-      // The frame covers the viewport exactly, so the pixel is a proportion.
-      const resident = this.#drawnFrame == null ? undefined : timelapse.tiles.get(this.#drawnFrame);
-      if (!resident) return empty('loading');
-      const px = Math.max(0, Math.min(resident.width - 1, Math.floor((offsetX / this.#viewport.width) * resident.width)));
-      const py = Math.max(0, Math.min(resident.height - 1, Math.floor((offsetY / this.#viewport.height) * resident.height)));
-      return readPixel(resident, py * resident.width + px, point);
-    }
-    if (!scene) return empty('outside');
+    const activeScene = this.#scene;
+    if (!activeScene) return empty('outside');
     const z = tileZoom(this.#camera);
     const world = lonLatToWorldPx(point, z);
     const x = Math.floor(world.px / TILE_SIZE);
     const y = Math.floor(world.py / TILE_SIZE);
-    const resident = this.#gpu.get(tileKey(scene, z, x, y));
-    if (!resident) return empty(covers(scene, z, x, y) ? 'loading' : 'outside');
+    const resident = this.#gpu.get(tileKey(activeScene, z, x, y));
+    if (!resident) return empty(covers(activeScene, z, x, y) ? 'loading' : 'outside');
+    if (useB && resident.sourceB == null) return empty('loading');
+    if (!useB && resident.source == null) return empty('loading');
     const px = Math.max(0, Math.min(resident.width - 1, Math.floor(world.px - x * TILE_SIZE)));
     const py = Math.max(0, Math.min(resident.height - 1, Math.floor(world.py - y * TILE_SIZE)));
-    return readPixel(resident, py * resident.width + px, point);
+    const source = (useB && resident.sourceB) ? resident.sourceB : resident.source ?? undefined;
+    return readPixel(resident, py * resident.width + px, point, source);
   }
 
   projectPoint(lon: number, lat: number): { x: number; y: number } {
@@ -831,11 +469,6 @@ export class MapScene {
     // draw, so an idle map costs nothing. Tiles in flight keep the loop running
     // even when nothing has been invalidated, because each arrival is one more
     // step toward a complete view.
-    const timelapse = this.#timelapse;
-    if (timelapse) {
-      this.#renderTimelapse(renderer, timelapse);
-      return;
-    }
     if (!this.#dirty && this.#pending.size === 0) return;
     this.#dirty = false;
 
@@ -846,57 +479,82 @@ export class MapScene {
       // view, so something is on screen long before the ~20 detail tiles are.
       // They are requested before any detail tile, which puts them at the
       // front of the client's queue and warms the server's dataset handles.
-      const preview = previewTiles(scene, visible.map((item) => item.tile));
-      for (const [distance, tile] of preview.entries()) {
-        wanted.add(tileKey(scene, tile.z, tile.x, tile.y));
-        this.#ensure(tile.z, tile.x, tile.y, scene, false, requestScore(0, distance));
-      }
-      // Until the first image of a scene is resident, detail requests would
-      // only compete with the preview for server slots. After that, the
-      // preview is just the first entry in each frame's queue.
-      const holdDetail = preview.some((tile) => this.#pending.has(tileKey(scene, tile.z, tile.x, tile.y)))
-        && !this.#hasResident(scene);
-      // Parents outrank exact tiles; within each level the centre goes first.
-      for (const item of holdDetail ? [] : visible) {
-        const parent = parentTile(item.tile.z, item.tile.x, item.tile.y);
-        if (parent && covers(scene, parent.z, parent.x, parent.y)) {
-          wanted.add(tileKey(scene, parent.z, parent.x, parent.y));
-          this.#ensure(parent.z, parent.x, parent.y, scene, false, requestScore(1, 1 - item.priority));
+      const isCompare = this.#compare != null;
+
+      // In compare mode, only request exact visible tiles (no coarse preview tiles or parent stand-ins)
+      // so 100% of network bandwidth loads the detail tiles, and missing tiles show the explorer map.
+      let preview: Array<{ z: number; x: number; y: number }> = [];
+      if (!isCompare) {
+        preview = previewTiles(scene, visible.map((item) => item.tile));
+        for (const [distance, tile] of preview.entries()) {
+          wanted.add(tileKey(scene, tile.z, tile.x, tile.y));
+          this.#ensure(tile.z, tile.x, tile.y, scene, false, requestScore(0, distance));
         }
-      }
-      for (const item of holdDetail ? [] : visible) {
-        if (covers(scene, item.tile.z, item.tile.x, item.tile.y)) {
-          wanted.add(tileKey(scene, item.tile.z, item.tile.x, item.tile.y));
-        }
-        this.#ensure(item.tile.z, item.tile.x, item.tile.y, scene, false, requestScore(2, 1 - item.priority));
-      }
-      if (this.#sceneB) {
-        for (const item of visible) {
+        const holdDetail = preview.some((tile) => this.#pending.has(tileKey(scene, tile.z, tile.x, tile.y)))
+          && !this.#hasResident(scene);
+        for (const item of holdDetail ? [] : visible) {
           const parent = parentTile(item.tile.z, item.tile.x, item.tile.y);
-          if (parent && covers(this.#sceneB, parent.z, parent.x, parent.y)) {
-            wanted.add(tileKey(this.#sceneB, parent.z, parent.x, parent.y));
-            this.#ensure(parent.z, parent.x, parent.y, this.#sceneB, true, requestScore(1, 1 - item.priority));
+          if (parent && covers(scene, parent.z, parent.x, parent.y)) {
+            wanted.add(tileKey(scene, parent.z, parent.x, parent.y));
+            this.#ensure(parent.z, parent.x, parent.y, scene, false, requestScore(1, 1 - item.priority));
           }
         }
-        for (const item of visible) {
-          if (covers(this.#sceneB, item.tile.z, item.tile.x, item.tile.y)) {
-            wanted.add(tileKey(this.#sceneB, item.tile.z, item.tile.x, item.tile.y));
+        for (const item of holdDetail ? [] : visible) {
+          if (covers(scene, item.tile.z, item.tile.x, item.tile.y)) {
+            wanted.add(tileKey(scene, item.tile.z, item.tile.x, item.tile.y));
           }
-          this.#ensure(item.tile.z, item.tile.x, item.tile.y, this.#sceneB, true, requestScore(2, 1 - item.priority));
+          this.#ensure(item.tile.z, item.tile.x, item.tile.y, scene, false, requestScore(2, 1 - item.priority));
+        }
+      } else {
+        // In compare mode: request both sides for each tile coordinate together,
+        // prioritised from the view centre outward.
+        for (const item of visible) {
+          const priorityA = requestScore(2, 1 - item.priority);
+          const priorityB = priorityA + 0.0001;
+
+          if (covers(scene, item.tile.z, item.tile.x, item.tile.y)) {
+            wanted.add(tileKey(scene, item.tile.z, item.tile.x, item.tile.y));
+            this.#ensure(item.tile.z, item.tile.x, item.tile.y, scene, false, priorityA);
+          }
+
+          if (this.#sceneB && covers(this.#sceneB, item.tile.z, item.tile.x, item.tile.y)) {
+            wanted.add(tileKey(this.#sceneB, item.tile.z, item.tile.x, item.tile.y));
+            this.#ensure(item.tile.z, item.tile.x, item.tile.y, this.#sceneB, true, priorityB);
+          }
         }
       }
       this.#abortUnwanted(wanted);
 
       // What the finished view is made of: the preview plus the detail tiles.
       // Parents are stand-ins, not part of the target.
-      const needed = preview.map((tile) => tileKey(scene, tile.z, tile.x, tile.y));
+      const neededA: string[] = [];
+      for (const tile of preview) neededA.push(tileKey(scene, tile.z, tile.x, tile.y));
       for (const item of visible) {
-        if (covers(scene, item.tile.z, item.tile.x, item.tile.y)) needed.push(tileKey(scene, item.tile.z, item.tile.x, item.tile.y));
+        if (covers(scene, item.tile.z, item.tile.x, item.tile.y)) neededA.push(tileKey(scene, item.tile.z, item.tile.x, item.tile.y));
       }
-      this.#needTotal = needed.length;
-      // A tile that failed is settled too; counting it as outstanding would
-      // leave the bar short of full forever at a scene's edge.
-      this.#needDone = needed.filter((key) => this.#gpu.has(key) || this.#failed.has(key)).length;
+      const doneA = neededA.filter((key) => (this.#gpu.get(key)?.analysisA != null) || this.#failed.has(key)).length;
+
+      let neededB: string[] = [];
+      let doneB = 0;
+      if (this.#sceneB) {
+        for (const item of visible) {
+          if (covers(this.#sceneB, item.tile.z, item.tile.x, item.tile.y)) neededB.push(tileKey(this.#sceneB, item.tile.z, item.tile.x, item.tile.y));
+        }
+        doneB = neededB.filter((key) => this.#loadedSecond.has(key) || this.#failed.has(key)).length;
+      }
+
+      this.#needTotal = neededA.length + neededB.length;
+      this.#needDone = doneA + doneB;
+
+      if (this.#compare) {
+        const nextStatusA: CompareStatus = neededA.length === 0 || doneA >= neededA.length ? 'ready' : 'loading';
+        const nextStatusB: CompareStatus = neededB.length === 0 || doneB >= neededB.length ? 'ready' : 'loading';
+        if (this.#compare.statusA !== nextStatusA || this.#compare.statusB !== nextStatusB) {
+          this.#compare.statusA = nextStatusA;
+          this.#compare.statusB = nextStatusB;
+          this.#publishCompare();
+        }
+      }
     } else {
       this.#needTotal = 0;
       this.#needDone = 0;
@@ -904,10 +562,13 @@ export class MapScene {
 
     const started = performance.now();
     if (renderer.ready) {
+      const isCompare = this.#compare != null;
       const tiles: DrawTile[] = scene
         ? visibleTiles(this.#camera, this.#viewport).map((item) => {
             const exact = tileKey(scene, item.tile.z, item.tile.x, item.tile.y);
-            const fallback = this.#gpu.has(exact) ? null : this.#residentAncestor(scene, item.tile);
+            // In compare mode: if exact tile is not loaded, do not stretch coarse ancestors;
+            // leave it unrendered so the explorer basemap shows through until exact tiles arrive!
+            const fallback = isCompare ? null : (this.#gpu.has(exact) ? null : this.#residentAncestor(scene, item.tile));
             return {
               key: fallback?.key ?? exact,
               screenX: item.screenX,
@@ -930,9 +591,7 @@ export class MapScene {
   #ensure(z: number, x: number, y: number, scene: Scene, isSecond: boolean, priority: number): void {
     const key = tileKey(scene, z, x, y);
     if (isSecond) {
-      // Only fetch B once A is resident: a swipe of two half-loaded dates shows
-      // one side, then a hole, then the other side.
-      if (!this.#scene || !this.#gpu.has(tileKey(this.#scene, z, x, y))) return;
+      if (this.#loadedSecond.has(key)) return;
     } else if (this.#gpu.has(key)) {
       return;
     }
@@ -1003,18 +662,33 @@ export class MapScene {
     // would make B overwrite A's bands and produce a difference of zero.
     const analysis = this.#analysis(tile);
     ndvi.runNdvi(analysis);
-    // No delta kernel here: the shader's difference layer is `ndvi_b - ndvi_a`
-    // and reads the two index planes directly. The masked delta plane exists
-    // for area statistics, which are not rendered.
 
-    const primaryKey = isSecond ? tileKey(this.#scene!, z, x, y) : key;
-    const existing = this.#gpu.get(primaryKey);
-    if (existing) {
-      if (isSecond) renderer.uploadSecondDate(existing, tile, analysis);
+    if (isSecond) {
+      this.#loadedSecond.add(key);
+      if (this.#scene) {
+        const primaryKey = tileKey(this.#scene, z, x, y);
+        const existing = this.#gpu.get(primaryKey);
+        if (existing) {
+          renderer.uploadSecond(primaryKey, tile, analysis, existing);
+        } else {
+          const gpuTile = renderer.uploadSecond(primaryKey, tile, analysis);
+          this.#gpu.set(primaryKey, gpuTile);
+        }
+      }
+      this.#invalidate();
       return;
     }
-    if (isSecond) return;
-    this.#gpu.set(primaryKey, renderer.upload(primaryKey, tile, analysis));
+
+    const primaryKey = key;
+    const existing = this.#gpu.get(primaryKey);
+    let gpuTile: RenderTile;
+    if (existing) {
+      gpuTile = renderer.upload(primaryKey, tile, analysis, existing);
+    } else {
+      gpuTile = renderer.upload(primaryKey, tile, analysis);
+      this.#gpu.set(primaryKey, gpuTile);
+    }
+
     if (this.#firstImageMs === null) {
       this.#firstImageMs = performance.now() - this.#sceneStartedAt;
       console.info(`[TerraScope] first image in ${this.#firstImageMs.toFixed(0)} ms (tile z${z}/${x}/${y})`);
@@ -1055,7 +729,11 @@ export class MapScene {
     if (this.#gpu.size <= max) return;
     for (const key of [...this.#gpu.keys()].slice(0, this.#gpu.size - max)) {
       const tile = this.#gpu.get(key);
-      if (tile) this.#renderer?.destroyTile(tile);
+      if (tile) {
+        if (tile.analysisA) this.#ndvi?.destroyTile(tile.analysisA);
+        if (tile.analysisB) this.#ndvi?.destroyTile(tile.analysisB);
+        this.#renderer?.destroyTile(tile);
+      }
       this.#gpu.delete(key);
     }
   }
@@ -1102,8 +780,13 @@ export class MapScene {
   #clearTiles(): void {
     this.#pending.clear();
     this.#failed.clear();
-    for (const tile of this.#gpu.values()) this.#renderer?.destroyTile(tile);
+    for (const tile of this.#gpu.values()) {
+      if (tile.analysisA) this.#ndvi?.destroyTile(tile.analysisA);
+      if (tile.analysisB) this.#ndvi?.destroyTile(tile.analysisB);
+      this.#renderer?.destroyTile(tile);
+    }
     this.#gpu.clear();
+    this.#loadedSecond.clear();
   }
 
   #publishStats(): void {
@@ -1177,177 +860,63 @@ export const IDLE_PROGRESS: RequestProgress = {
   queued: 0, waiting: 0, downloading: 0, loadedBytes: 0, totalBytes: 0, oldestMs: null,
 };
 
-// ---- timelapse types and helpers -----------------------------------------
+// ---- compare types and helpers ------------------------------------------
 
 export interface MapView {
   camera: CameraState;
   viewport: Viewport;
 }
 
-export type FrameStatus = 'idle' | 'loading' | 'ready' | 'failed';
-
-export interface FrameVegetationStats {
-  meanNdvi: number;
-  vegetationPercent: number;
-  sampleCount: number;
-}
+export type CompareStatus = 'idle' | 'loading' | 'ready' | 'failed';
 
 /** Immutable snapshot for React. Replaced, never mutated, on every change. */
-export interface TimelapseState {
+export interface CompareState {
   active: boolean;
-  frames: readonly Scene[];
-  status: readonly FrameStatus[];
-  /** Per frame: removed from playback, by the user or the cloud rule. */
-  excluded: readonly boolean[];
-  /** Per frame: fraction of the view that is cloud, shadow or cirrus; null until loaded. */
-  viewCloud: readonly (number | null)[];
-  /** Per frame: mean vegetation index and cover percentage; null until loaded. */
-  viewVegetation: readonly (FrameVegetationStats | null)[];
-  /** Per frame: removed by the cloud rule. */
-  autoRemoved: readonly boolean[];
-  /** Cloud rule threshold (fraction of the view), or null when off. */
-  autoCloud: number | null;
-  index: number;
-  playing: boolean;
-  /** Playback is waiting for the next frame to arrive. */
-  buffering: boolean;
-  fps: number;
-  loop: boolean;
-  frameSize: { width: number; height: number } | null;
+  a: FrameScene | null;
+  b: FrameScene | null;
+  statusA: CompareStatus;
+  statusB: CompareStatus;
+  /** The view moved; a re-read is about to run after the gesture settles. */
+  refreshing: boolean;
+  fromGapDays: number;
+  toGapDays: number;
 }
 
-export const IDLE_TIMELAPSE: TimelapseState = {
-  active: false, frames: [], status: [], excluded: [], viewCloud: [], viewVegetation: [], autoRemoved: [], autoCloud: null, index: 0, playing: false, buffering: false, fps: 4, loop: true, frameSize: null,
+export const IDLE_COMPARE: CompareState = {
+  active: false,
+  a: null,
+  b: null,
+  statusA: 'idle',
+  statusB: 'idle',
+  refreshing: false,
+  fromGapDays: 0,
+  toGapDays: 0,
 };
 
-interface TimelapseSession {
-  frames: FrameScene[];
-  status: FrameStatus[];
-  /** Dates removed from playback, by the user or by the cloud rule. */
-  excluded: boolean[];
-  /** Fraction of the view under cloud, cloud shadow or cirrus; null until loaded. */
-  viewCloud: Array<number | null>;
-  /** Vegetation statistics; null until loaded. */
-  viewVegetation: Array<FrameVegetationStats | null>;
-  /** Removed by the cloud rule rather than by the user. */
-  autoRemoved: boolean[];
-  /** The user toggled this date: the cloud rule leaves it alone from then on. */
-  manual: boolean[];
-  /** The user has played, scrubbed or stepped; from then on the position is theirs. */
-  userSeeked: boolean;
-  plan: FramePlan;
-  /** GPU resources per frame index, bounded independently from ordinary tiles. */
-  tiles: Map<number, RenderTile>;
-  loading: Set<number>;
-  controllers: Map<number, AbortController>;
-  index: number;
-  direction: 1 | -1;
-  playing: boolean;
-  fps: number;
-  loop: boolean;
-  buffering: boolean;
-  lastStep: number;
-}
-
-/**
- * Frames fetched at once after the first. Two, not six: on a
- * bandwidth-limited link more parallel frames only makes each one later,
- * and playback needs them in order.
- */
-const FRAME_CONCURRENCY = 2;
-/** Four nearby frames plus two recently viewed frames for smooth back-scrubbing. */
-const MAX_RESIDENT_FRAMES = 6;
-
-/**
- * Default cloud rule: drop frames with more than 30% of the view under cloud.
- * Loose enough to keep a few scattered clouds, strict enough to drop the
- * overcast and hazy days that make a timelapse flicker.
- */
-const DEFAULT_AUTO_CLOUD = 0.3;
-
-/**
- * Fraction of the frame's covered pixels that are cloud, cloud shadow or
- * cirrus, from its `clear` mask. Null when the frame has none (quality
- * masking off) or covers nothing.
- */
-function viewCloudFraction(tile: NumericTile): number | null {
-  const clear = tile.masks['clear'];
-  const covered = tile.masks['coverage:red'];
-  if (!clear || !covered) return null;
-  let total = 0;
-  let cloudy = 0;
-  for (let i = 0; i < covered.length; i += 1) {
-    if (covered[i] !== 1) continue;
-    total += 1;
-    if (clear[i] !== 1) cloudy += 1;
-  }
-  return total > 0 ? cloudy / total : null;
-}
-
-/**
- * Vegetation metrics over the clear, covered pixels in this frame:
- * mean NDVI and the percentage of area with living vegetation (NDVI >= 0.25).
- */
-function viewVegetationStats(tile: NumericTile): FrameVegetationStats | null {
-  const red = tile.bands['red'];
-  const nir = tile.bands['nir'];
-  const clear = tile.masks['clear'];
-  const covered = tile.masks['coverage:red'];
-  if (!red || !nir || !clear || !covered) return null;
-  let validCount = 0;
-  let sumNdvi = 0;
-  let vegCount = 0;
-  const len = covered.length;
-  for (let i = 0; i < len; i += 1) {
-    if (covered[i] !== 1) continue;
-    if (clear[i] !== 1) continue;
-    const r = red[i];
-    const n = nir[i];
-    if (!Number.isFinite(r) || !Number.isFinite(n)) continue;
-    const denom = n + r;
-    if (Math.abs(denom) <= 1e-3) continue;
-    const ndvi = (n - r) / denom;
-    if (!Number.isFinite(ndvi)) continue;
-    validCount += 1;
-    sumNdvi += ndvi;
-    if (ndvi >= 0.25) vegCount += 1;
-  }
-  if (validCount === 0) return null;
-  return {
-    meanNdvi: sumNdvi / validCount,
-    vegetationPercent: (vegCount / validCount) * 100,
-    sampleCount: validCount,
-  };
-}
-
-/** Nearest loaded frame still in the timeline, looking forward first. */
-function nearestKept(timelapse: TimelapseSession, index: number): number | null {
-  for (let d = 1; d < timelapse.frames.length; d += 1) {
-    for (const i of [index + d, index - d]) {
-      if (i >= 0 && i < timelapse.frames.length && timelapse.status[i] === 'ready' && !timelapse.excluded[i]) return i;
-    }
-  }
-  return null;
-}
-
-function frameKey(index: number): string {
-  return `frame:${index}`;
-}
-
-function frameIndex(key: string): number {
-  return Number(key.slice('frame:'.length));
-}
-
-/** The requested frame if loaded, else the nearest loaded one before it, else after. */
-function nearestReady(status: readonly FrameStatus[], index: number): number | null {
-  for (let i = index; i >= 0; i -= 1) if (status[i] === 'ready') return i;
-  for (let i = index + 1; i < status.length; i += 1) if (status[i] === 'ready') return i;
-  return null;
+interface CompareSession {
+  a: FrameScene;
+  b: FrameScene;
+  fromGapDays: number;
+  toGapDays: number;
+  statusA: CompareStatus;
+  statusB: CompareStatus;
 }
 
 /** Values and NDVI at one sample of a resident tile or frame. */
-function readPixel(resident: RenderTile, index: number, point: { lon: number; lat: number }): PixelInspection {
-  const tile = resident.source;
+function readPixel(
+  resident: RenderTile,
+  index: number,
+  point: { lon: number; lat: number },
+  source?: NumericTile,
+): PixelInspection {
+  const tile = source ?? resident.source;
+  if (!tile) {
+    return {
+      lon: point.lon, lat: point.lat, status: 'outside',
+      date: null, red: null, green: null, blue: null, nir: null,
+      ndvi: null, qualityValid: null,
+    };
+  }
   const value = (name: string): number | null => {
     const band = tile.bands[name];
     return band && Number.isFinite(band[index]) ? band[index] : null;

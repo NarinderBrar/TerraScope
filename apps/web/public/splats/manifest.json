@@ -1,0 +1,25 @@
+{
+  "converter": "@playcanvas/splat-transform@2.3.1",
+  "assets": [
+    {
+      "id": "JAX_068",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/JAX_068_final.ply",
+      "sourceSha256": "3c94bd6d00444eaac7d4d8e1e59cd239c60d5d079033a096bd6b8c92e06c3316",
+      "file": "JAX_068.sog",
+      "bytes": 31722474,
+      "sha256": "6097e9c87a651f5e03f859a26e85124369205129b5bc9023c82b191ba6b27a05",
+      "splats": 2309268,
+      "sogVersion": 2
+    },
+    {
+      "id": "NYC_004",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/NYC_004_final.ply",
+      "sourceSha256": "18c13b90d82b0f88dfc6bac1f0e78fd31fe11476b5a57e95e6be84d372f6d3b7",
+      "file": "NYC_004.sog",
+      "bytes": 31334762,
+      "sha256": "105ae47493db472d049c3b45f16b183151799a55415fe2827c648db75251ce17",
+      "splats": 2344147,
+      "sogVersion": 2
+    }
+  ]
+}

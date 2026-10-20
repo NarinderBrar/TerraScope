@@ -97,7 +97,7 @@ export class GpuContext {
   }
 
   static async create(): Promise<GpuContext> {
-    if (!('gpu' in navigator)) {
+    if (!navigator.gpu) {
       throw new WebGpuUnavailable(
         globalThis.isSecureContext ? 'no-navigator-gpu' : 'insecure-context',
         globalThis.isSecureContext
@@ -121,11 +121,12 @@ export class GpuContext {
     const urlPowerPref = typeof window !== 'undefined'
       ? (new URLSearchParams(window.location.search).get('gpu') as GPUPowerPreference | null)
       : null;
+    const gpu = navigator.gpu as unknown as GPU;
     const adapter =
-      (urlPowerPref ? await navigator.gpu.requestAdapter({ powerPreference: urlPowerPref }) : null) ??
-      (await navigator.gpu.requestAdapter({ powerPreference: 'low-power' })) ??
-      (await navigator.gpu.requestAdapter()) ??
-      (await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }));
+      (urlPowerPref ? await gpu.requestAdapter({ powerPreference: urlPowerPref }) : null) ??
+      (await gpu.requestAdapter({ powerPreference: 'low-power' })) ??
+      (await gpu.requestAdapter()) ??
+      (await gpu.requestAdapter({ powerPreference: 'high-performance' }));
     if (!adapter) {
       throw new WebGpuUnavailable(
         'no-adapter',
@@ -196,11 +197,11 @@ export class GpuContext {
     this.#context = context;
     // bgra8unorm is what every desktop backend prefers; fall back only if the
     // implementation insists.
-    this.#format = navigator.gpu.getPreferredCanvasFormat();
+    this.#format = navigator.gpu!.getPreferredCanvasFormat();
     return this.#format;
   }
 
-  configure(alphaMode: GPUCanvasAlphaMode = 'opaque'): void {
+  configure(alphaMode: GPUCanvasAlphaMode = 'premultiplied'): void {
     if (!this.#context || !this.#canvas) {
       throw new WebGpuUnavailable('no-context', 'configure() called before attachCanvas().');
     }

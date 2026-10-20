@@ -62,26 +62,28 @@ export interface DrawTile {
 export interface RenderTile {
   width: number;
   height: number;
-  /** rgba32float: r = red, g = green, b = blue, a = nir. */
-  texture: GPUTexture;
-  view: GPUTextureView;
+  /** rgba32float: r = red, g = green, b = blue, a = nir for Date A. */
+  texture: GPUTexture | null;
+  view: GPUTextureView | null;
   /** B's bands, absent until a comparison date is uploaded. */
   textureB: GPUTexture | null;
   viewB: GPUTextureView | null;
-  /** `coverage:red` from the header. Drives rendering, not analysis. */
-  coverage: GPUBuffer;
+  /** `coverage:red` from Date A header. Drives rendering, not analysis. */
+  coverage: GPUBuffer | null;
+  /** `coverage:red` from Date B header. */
+  coverageB: GPUBuffer | null;
   /** Date A's compute output. NDVI lives on the GPU, never on the CPU. */
-  analysisA: UploadedTile;
+  analysisA: UploadedTile | null;
   /** Date B's compute output, when a comparison date is loaded. */
   analysisB: UploadedTile | null;
   bindGroup: GPUBindGroup;
   bindGroupSwipe: GPUBindGroup;
   /** Bounded CPU copy retained for explicit pixel inspection. */
-  source: NumericTile;
+  source: NumericTile | null;
   sourceB: NumericTile | null;
 }
 
-const FLOATS_PER_VERTEX = 4;
+const FLOATS_PER_VERTEX = 6;
 const VERTICES_PER_QUAD = 6;
 
 /**
@@ -146,9 +148,9 @@ export class RasterRenderer {
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
-        // 3..7 are the packed coverage masks and the two index planes. All are
-        // read-only storage, and all are per tile.
-        ...[3, 4, 5, 6, 7].map((binding) => ({
+        // 3..8 are the packed coverage masks and the index planes:
+        // 3: coverage_a, 4: index_valid_a, 5: index_valid_b, 6: ndvi_a, 7: ndvi_b, 8: coverage_b
+        ...[3, 4, 5, 6, 7, 8].map((binding) => ({
           binding,
           visibility: GPUShaderStage.FRAGMENT,
           buffer: { type: 'read-only-storage' as const },
@@ -168,6 +170,7 @@ export class RasterRenderer {
             attributes: [
               { shaderLocation: 0, offset: 0, format: 'float32x2' },
               { shaderLocation: 1, offset: 8, format: 'float32x2' },
+              { shaderLocation: 2, offset: 16, format: 'float32x2' },
             ],
           },
         ],
@@ -178,7 +181,23 @@ export class RasterRenderer {
         // The canvas format, not rgba32float: an rgba32float render target is
         // not universally supported, and the canvas is never the precision
         // bottleneck for an 8-bit display.
-        targets: [{ format: this.context.format }],
+        targets: [
+          {
+            format: this.context.format,
+            blend: {
+              color: {
+                srcFactor: 'src-alpha',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+              alpha: {
+                srcFactor: 'one',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+            },
+          },
+        ],
       },
       primitive: { topology: 'triangle-list' },
     });
@@ -199,14 +218,10 @@ export class RasterRenderer {
   }
 
   /**
-   * Upload a decoded tile and build its bind groups.
-   *
-   * `analysisA` is the already-computed NDVI tile from `NdviGpu`. The renderer
-   * deliberately does not compute the index itself: there is one
-   * implementation of NDVI, it is the one the parity suite checks, and a second
-   * rendering-side copy is how a legend and a pixel drift apart.
+   * Upload a decoded tile for Date A and build its bind groups.
+   * If `existing` is provided (e.g. Date B was uploaded first), updates `existing`.
    */
-  upload(key: string, tile: NumericTile, analysisA: UploadedTile): RenderTile {
+  upload(key: string, tile: NumericTile, analysisA: UploadedTile, existing?: RenderTile): RenderTile {
     const device = this.context.device;
     const { width, height } = tile.header;
     const pixels = width * height;
@@ -235,13 +250,27 @@ export class RasterRenderer {
       throw new Error(`tile ${key} has no coverage mask in its header`);
     }
     const coverage = device.createBuffer({
-      label: `coverage:${key}`,
+      label: `coverage-a:${key}`,
       size: packedBytes(pixels),
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(coverage, 0, asSource(toBytes(packMask(coverageSource))));
 
     const view = texture.createView();
+
+    if (existing) {
+      existing.texture?.destroy();
+      existing.coverage?.destroy();
+      existing.texture = texture;
+      existing.view = view;
+      existing.coverage = coverage;
+      existing.analysisA = analysisA;
+      existing.source = tile;
+      existing.bindGroup = this.#makeBindGroup(existing, false);
+      existing.bindGroupSwipe = this.#makeBindGroup(existing, true);
+      return existing;
+    }
+
     const renderTile: RenderTile = {
       width,
       height,
@@ -250,6 +279,7 @@ export class RasterRenderer {
       textureB: null,
       viewB: null,
       coverage,
+      coverageB: null,
       analysisA,
       analysisB: null,
       bindGroup: null as unknown as GPUBindGroup,
@@ -263,24 +293,16 @@ export class RasterRenderer {
   }
 
   /**
-   * Attach a comparison date to a tile, enabling swipe and difference.
-   *
-   * `analysisB` must come from a *separate* `uploadTile` call. A's and B's index
-   * planes are distinct arrays, and the shader reads both at once.
+   * Upload a decoded tile for Date B and build its bind groups.
+   * If `existing` is provided, updates `existing`.
    */
-  uploadSecondDate(tile: RenderTile, second: NumericTile, analysisB: UploadedTile): void {
+  uploadSecond(key: string, second: NumericTile, analysisB: UploadedTile, existing?: RenderTile): RenderTile {
     const device = this.context.device;
     const { width, height } = second.header;
-    if (width !== tile.width || height !== tile.height) {
-      // A mismatch would make the shader read past the end of B's planes. The
-      // out-of-range reads are zeros, which look exactly like a fully
-      // masked-out date rather than like an error.
-      throw new Error(`comparison tile is ${width}x${height}, primary is ${tile.width}x${tile.height}`);
-    }
-    this.releaseSecondDate(tile);
+    const pixels = width * height;
 
     const texture = device.createTexture({
-      label: 'tile-b',
+      label: `tile-b:${key}`,
       size: { width, height },
       format: 'rgba32float',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
@@ -291,21 +313,68 @@ export class RasterRenderer {
       { bytesPerRow: width * 16, rowsPerImage: height },
       { width, height },
     );
-    tile.textureB = texture;
-    tile.viewB = texture.createView();
-    tile.analysisB = analysisB;
-    tile.sourceB = second;
-    tile.bindGroupSwipe = this.#makeBindGroup(tile, true);
-    // A swipe is a screen-space split of one layer, so it uses the same group
-    // either way. `difference` needs B too, but it is selected through
-    // `swipeEnabled` being off and `layer === 2`, so it needs a group with B.
-    tile.bindGroup = tile.bindGroupSwipe;
+
+    const coverageSource = second.masks['coverage:red'] ?? second.masks['coverage:nir'];
+    if (!coverageSource) {
+      texture.destroy();
+      throw new Error(`tile ${key} has no coverage mask in its header`);
+    }
+    const coverage = device.createBuffer({
+      label: `coverage-b:${key}`,
+      size: packedBytes(pixels),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(coverage, 0, asSource(toBytes(packMask(coverageSource))));
+
+    const view = texture.createView();
+
+    if (existing) {
+      existing.textureB?.destroy();
+      existing.coverageB?.destroy();
+      existing.textureB = texture;
+      existing.viewB = view;
+      existing.coverageB = coverage;
+      existing.analysisB = analysisB;
+      existing.sourceB = second;
+      existing.bindGroupSwipe = this.#makeBindGroup(existing, true);
+      existing.bindGroup = existing.bindGroupSwipe;
+      return existing;
+    }
+
+    const renderTile: RenderTile = {
+      width,
+      height,
+      texture: null,
+      view: null,
+      textureB: texture,
+      viewB: view,
+      coverage: null,
+      coverageB: coverage,
+      analysisA: null,
+      analysisB,
+      bindGroup: null as unknown as GPUBindGroup,
+      bindGroupSwipe: null as unknown as GPUBindGroup,
+      source: null,
+      sourceB: second,
+    };
+    renderTile.bindGroup = this.#makeBindGroup(renderTile, false);
+    renderTile.bindGroupSwipe = this.#makeBindGroup(renderTile, true);
+    return renderTile;
+  }
+
+  /**
+   * Attach a comparison date to a tile, enabling swipe and difference.
+   */
+  uploadSecondDate(tile: RenderTile, second: NumericTile, analysisB: UploadedTile): void {
+    this.uploadSecond('', second, analysisB, tile);
   }
 
   releaseSecondDate(tile: RenderTile): void {
     tile.textureB?.destroy();
     tile.textureB = null;
     tile.viewB = null;
+    tile.coverageB?.destroy();
+    tile.coverageB = null;
     tile.analysisB = null;
     tile.sourceB = null;
     tile.bindGroup = this.#makeBindGroup(tile, false);
@@ -314,32 +383,40 @@ export class RasterRenderer {
 
   /**
    * Build a bind group from the tile's *current* resources.
-   *
-   * Read fresh on every call rather than mutated in place: a bind group is
-   * immutable, so a new comparison date necessarily means a new bind group.
    */
   #makeBindGroup(tile: RenderTile, withSecond: boolean): GPUBindGroup {
-    if (!this.#layout || !this.#uniformBuffer || !this.#emptyBuffer) {
+    if (!this.#layout || !this.#uniformBuffer) {
       throw new Error('RasterRenderer.initialise() must complete first.');
     }
     const a = tile.analysisA;
     const b = withSecond ? tile.analysisB : null;
+
+    const activeViewA = tile.view ?? tile.viewB;
+    const activeViewB = (b && tile.viewB) ?? tile.view ?? tile.viewB;
+    const activeCoverageA = tile.coverage ?? tile.coverageB;
+    const activeCoverageB = (b && tile.coverageB) ?? activeCoverageA;
+    const activeValidA = a?.ndviValid.buffer ?? b?.ndviValid.buffer;
+    const activeValidB = (b && b.ndviValid.buffer) ?? activeValidA;
+    const activeNdviA = a?.ndvi.buffer ?? b?.ndvi.buffer;
+    const activeNdviB = (b && b.ndvi.buffer) ?? activeNdviA;
+
+    if (!activeViewA || !activeCoverageA || !activeValidA || !activeNdviA || !activeViewB || !activeCoverageB || !activeValidB || !activeNdviB) {
+      throw new Error('RenderTile must have at least one date loaded.');
+    }
+
     return this.context.device.createBindGroup({
       label: withSecond ? 'tile-bind-a+b' : 'tile-bind-a',
       layout: this.#layout,
       entries: [
         { binding: 0, resource: { buffer: this.#uniformBuffer } },
-        { binding: 1, resource: tile.view },
-        // Binding 2 is only sampled when a second date is loaded; pointing it
-        // at A before then keeps a single bind group layout.
-        { binding: 2, resource: (b && tile.viewB) || tile.view },
-        { binding: 3, resource: { buffer: tile.coverage } },
-        // 4 and 5 are A's and B's *index* validity. When B is absent, pointing
-        // at A ensures the buffer is full-sized (preventing OOB driver crashes).
-        { binding: 4, resource: { buffer: a.ndviValid.buffer } },
-        { binding: 5, resource: { buffer: (b && b.ndviValid.buffer) || a.ndviValid.buffer } },
-        { binding: 6, resource: { buffer: a.ndvi.buffer } },
-        { binding: 7, resource: { buffer: (b && b.ndvi.buffer) || a.ndvi.buffer } },
+        { binding: 1, resource: activeViewA },
+        { binding: 2, resource: activeViewB },
+        { binding: 3, resource: { buffer: activeCoverageA } },
+        { binding: 4, resource: { buffer: activeValidA } },
+        { binding: 5, resource: { buffer: activeValidB } },
+        { binding: 6, resource: { buffer: activeNdviA } },
+        { binding: 7, resource: { buffer: activeNdviB } },
+        { binding: 8, resource: { buffer: activeCoverageB } },
       ],
     });
   }
@@ -394,11 +471,15 @@ export class RasterRenderer {
       const extentY = (item.size ? item.size.height : TILE_SIZE * item.scale) * dpr;
       const firstVertex = cursor / FLOATS_PER_VERTEX;
       const [u0, v0, u1, v1] = item.uv ?? [0, 0, 1, 1];
+      const hasA = tile.analysisA != null ? 1.0 : 0.0;
+      const hasB = tile.analysisB != null ? 1.0 : 0.0;
       for (const [u, v] of QUAD) {
         scratch[cursor++] = originX + u * extentX;
         scratch[cursor++] = originY + v * extentY;
         scratch[cursor++] = u0 + u * (u1 - u0);
         scratch[cursor++] = v0 + v * (v1 - v0);
+        scratch[cursor++] = hasA;
+        scratch[cursor++] = hasB;
       }
       // Chosen here, not at draw time, so the group and the vertices in a
       // batch always describe the same date arrangement.
@@ -427,7 +508,7 @@ export class RasterRenderer {
       colorAttachments: [
         {
           view: surfaceView,
-          clearValue: { r: 0.08, g: 0.09, b: 0.1, a: 1 },
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
           loadOp: 'clear',
           storeOp: 'store',
         },
@@ -449,9 +530,14 @@ export class RasterRenderer {
   }
 
   destroyTile(tile: RenderTile): void {
-    tile.texture.destroy();
+    tile.texture?.destroy();
+    tile.texture = null;
     tile.textureB?.destroy();
-    tile.coverage.destroy();
+    tile.textureB = null;
+    tile.coverage?.destroy();
+    tile.coverage = null;
+    tile.coverageB?.destroy();
+    tile.coverageB = null;
   }
 
   destroy(): void {
@@ -516,9 +602,8 @@ function packUniforms(
   view.setUint32(16, RAMP_BANDS[settings.band], true);
   view.setUint32(20, hasSecond ? 1 : 0, true);
   view.setFloat32(24, Math.max(0, settings.gamma), true);
-  // Only meaningful together: a swipe with no second date draws A on both sides
-  // and looks like a bug, so the flag is suppressed instead.
-  view.setUint32(28, settings.swipeEnabled && hasSecond ? 1 : 0, true);
+  // When swipe is enabled, the shader evaluates per-tile presence flags on each side of the divider.
+  view.setUint32(28, settings.swipeEnabled ? 1 : 0, true);
   view.setFloat32(32, Math.max(0, settings.exposure), true);
   view.setFloat32(36, settings.ndviMin, true);
   view.setFloat32(40, Math.max(settings.ndviMin + 0.01, settings.ndviMax), true);

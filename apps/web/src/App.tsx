@@ -1,33 +1,33 @@
 /**
  * The application shell.
  *
- * Two states. Explore: a satellite basemap with place search and free pan and
- * zoom -- no scenes, no science requests. Timelapse: pressing Play finds every
- * acquisition covering the view in the chosen dates, locks the view, and
- * plays calibrated, cloud-masked frames processed by the raster service.
- *
- * Holds no imagery state. `MapScene` owns the camera, the GPU resources and the
- * frame loop; this reads snapshots from it and writes intent back through method
- * calls. Anything that changed on every frame would be a bug here, because
- * React would re-render on every frame to display it.
+ * Two modes:
+ * 1. Explore mode: satellite basemap with place search, free pan and zoom.
+ * 2. Timeline / Swipe mode: user selects a date range, the app finds 2 scenes
+ *    closest to those dates, and provides an interactive swipe divider to compare
+ *    both maps side by side (e.g. comparing vegetation, NDVI, or natural colour)
+ *    based on the right-side panel settings.
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   IDLE_PROGRESS,
-  IDLE_TIMELAPSE,
+  IDLE_COMPARE,
   MapScene,
   type MapStats,
   type MapStatus,
   type PixelInspection,
-  type TimelapseState,
+  type CompareState,
 } from './app/MapScene';
-import { pickBySlots, selectFramesForView } from './app/timelapsePlan';
+import { selectFramesForView, pickComparisonPair } from './app/comparePlan';
 import { MISSION_START, searchView } from './app/sceneSearch';
 import { RasterClient, RasterError } from './data/RasterClient';
 import { Basemap, BASEMAP_ATTRIBUTION } from './map/Basemap';
 import { MAX_ZOOM, MIN_ZOOM } from './map/MapCamera';
 import { PlaceSearch, zoomForKind, type Place } from './ui/PlaceSearch';
+import { GlobeView } from './globe/GlobeView';
+import { SplatView } from './splat/SplatView';
+import { SKYFALL_SCENES, findIntersectingScene, selectionBounds, type GeoBounds, type ScreenPoint, type SplatSceneMeta } from './data/splatScenes';
 import {
   BAND_LABELS,
   deltaLegend,
@@ -38,17 +38,16 @@ import {
 import type { RenderLayer, RenderSettings } from './gpu/RasterRenderer';
 import type { DatasetConfig, RegionStatsResponse } from '@terrascope/contracts';
 
-/** A timelapse needs a view one granule can fill; wider views are mostly empty frames. */
-const MIN_TIMELAPSE_ZOOM = 10;
-/** Frames held at once. Each is ~12 MB of GPU memory at the frame budget. */
-const MAX_TIMELAPSE_FRAMES = 60;
+/** Comparison needs a view one granule can fill; wider views are mostly empty frames. */
+const MIN_COMPARE_ZOOM = 10;
 
-const LAYERS: Array<{ id: RenderLayer; label: string }> = [
-  { id: 'natural', label: 'Natural colour' },
-  { id: 'vegetation', label: 'Vegetation (Green / Gray)' },
-  { id: 'false', label: 'False colour (NIR)' },
-  { id: 'ndvi', label: 'NDVI' },
-  { id: 'band', label: 'Single band' },
+const LAYERS: Array<{ id: RenderLayer; label: string; icon: string; description: string }> = [
+  { id: 'vegetation', label: 'Vegetation (Green / Gray)', icon: '🌿', description: 'Living vegetation in green (NDVI ≥ 0.25), non-vegetation in grayscale' },
+  { id: 'ndvi', label: 'NDVI', icon: '📊', description: 'Normalized Difference Vegetation Index ramp (-1 to 1)' },
+  { id: 'natural', label: 'Natural colour', icon: '🌍', description: 'True colour red, green, and blue bands' },
+  { id: 'false', label: 'False colour (NIR)', icon: '🔴', description: 'Near-infrared, red, and green; vegetation appears red' },
+  { id: 'band', label: 'Single band', icon: '🔍', description: 'Inspect individual spectral band stretched to full range' },
+  { id: 'difference', label: 'NDVI difference', icon: '⇄', description: 'NDVI change between Date B and Date A across whole view' },
 ];
 
 interface Dates {
@@ -100,491 +99,354 @@ function CanvasAndScene({
 }): React.JSX.Element {
   const status = useSceneStatus(scene);
   const stats = useSceneStats(scene);
-  const timelapse = useTimelapse(scene);
+  const compare = useCompare(scene);
   const camera = useCamera(scene);
+  const settings = useSceneSettings(scene);
+  const containerRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
   const [inspection, setInspection] = useState<PixelInspection | null>(null);
+  const [globeMode, setGlobeMode] = useState(false);
   const lastInspect = useRef(0);
+  const [splatScene, setSplatScene] = useState<SplatSceneMeta | null>(null);
+  const [splatEntryBounds, setSplatEntryBounds] = useState<GeoBounds | null>(null);
+  const [markMode, setMarkMode] = useState(false);
+  const [markedBounds, setMarkedBounds] = useState<GeoBounds | null>(null);
+  const [aoiSelection, setAoiSelection] = useState<{ start: ScreenPoint; current: ScreenPoint } | null>(null);
+  const marquee = useRef<{ pointerId: number; start: ScreenPoint; current: ScreenPoint } | null>(null);
+  const selectionCamera = useRef<MapScene['camera'] | null>(null);
+
+  useEffect(() => {
+    // The published view can lag the live camera by a frame. A view notification
+    // for the camera used to begin this gesture must not cancel that gesture.
+    if (selectionCamera.current && scene?.camera !== selectionCamera.current) {
+      setMarkedBounds(null);
+      setAoiSelection(null);
+      marquee.current = null;
+      selectionCamera.current = null;
+    }
+  }, [camera, scene]);
+
+  useEffect(() => {
+    drag.current = null;
+    marquee.current = null;
+    selectionCamera.current = null;
+    setMarkedBounds(null);
+    setAoiSelection(null);
+    setMarkMode(false);
+  }, [compare.active, globeMode]);
+
+  useEffect(() => {
+    const cancelSelection = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || splatScene) return;
+      marquee.current = null;
+      drag.current = null;
+      setAoiSelection(null);
+      setMarkedBounds(null);
+      setMarkMode(false);
+    };
+    window.addEventListener('keydown', cancelSelection);
+    return () => window.removeEventListener('keydown', cancelSelection);
+  }, [splatScene]);
+
+  const localPoint = (event: React.PointerEvent<HTMLCanvasElement>): ScreenPoint => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return { x: Math.max(0, Math.min(rect.width, event.clientX - rect.left)), y: Math.max(0, Math.min(rect.height, event.clientY - rect.top)) };
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !scene) return;
-    const observer = new ResizeObserver(() => scene.resize());
+    const observer = new ResizeObserver(() => {
+      scene.resize();
+      setMarkedBounds(null);
+      setAoiSelection(null);
+      marquee.current = null;
+    });
     observer.observe(canvas);
     return () => observer.disconnect();
   }, [canvasRef, scene]);
 
-  // Readouts belong to frames; the basemap is a picture with nothing to read.
   useEffect(() => {
-    if (!timelapse.active) setInspection(null);
-  }, [timelapse.active]);
+    if (!compare.active) setInspection(null);
+  }, [compare.active]);
 
-  // Pointer Events rather than mouse and touch listeners separately: the two
-  // used to disagree about the capture target, and a pan that stops halfway on
-  // a trackpad is very visible.
   const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    if (event.button !== 0 || !event.isPrimary) return;
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (!compare.active && (event.shiftKey || markMode)) {
+      const start = localPoint(event);
+      selectionCamera.current = scene?.camera ?? null;
+      marquee.current = { pointerId: event.pointerId, start, current: start };
+      setAoiSelection({ start, current: start });
+      setMarkedBounds(null);
+      return;
+    }
     drag.current = { x: event.clientX, y: event.clientY };
   };
+
   const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    if (!event.isPrimary) return;
     const start = drag.current;
     if (!scene) return;
+    if (marquee.current) {
+      if (marquee.current.pointerId !== event.pointerId) return;
+      marquee.current.current = localPoint(event);
+      setAoiSelection({ start: marquee.current.start, current: marquee.current.current });
+      return;
+    }
     if (start) {
-      // The pointer's movement, so the map follows the hand: drag right and
-      // the ground moves right (panBy shifts the centre the other way).
       scene.panByPixels(event.clientX - start.x, event.clientY - start.y);
       drag.current = { x: event.clientX, y: event.clientY };
       return;
     }
-    if (!scene.timelapse.active) return;
+    if (!compare.active) return;
     const now = performance.now();
     if (now - lastInspect.current < 80) return;
     lastInspect.current = now;
     const rect = event.currentTarget.getBoundingClientRect();
     setInspection(scene.inspectPixel(event.clientX - rect.left, event.clientY - rect.top));
   };
-  const endDrag = (): void => {
+
+  const endDrag = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    if (!event.isPrimary) return;
+    const selection = marquee.current;
+    if (selection && selection.pointerId !== event.pointerId) return;
+    if (selection && scene && event.type === 'pointerup') {
+      const end = localPoint(event);
+      if (Math.abs(end.x - selection.start.x) >= 4 && Math.abs(end.y - selection.start.y) >= 4) {
+        const rect = event.currentTarget.getBoundingClientRect();
+        setMarkedBounds(selectionBounds(scene.camera, { width: rect.width, height: rect.height, dpr: 1 }, selection.start, end));
+        setAoiSelection({ start: selection.start, current: end });
+      } else setAoiSelection(null);
+      setMarkMode(false);
+    } else if (selection) setAoiSelection(null);
+    marquee.current = null;
     drag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
+
   const onWheel = (event: React.WheelEvent<HTMLCanvasElement>): void => {
-    if (!scene) return;
+    if (!scene || marquee.current) return;
     const rect = event.currentTarget.getBoundingClientRect();
     scene.zoomAroundPixels(event.deltaY, event.clientX - rect.left, event.clientY - rect.top);
   };
 
+  const explorer2d = !compare.active && !globeMode && !splatScene;
+  const detectedScene = explorer2d && scene ? findIntersectingScene(markedBounds ?? scene.viewBounds()) : undefined;
+  const isDifference = settings?.layer === 'difference';
+  const showSwipeSeam = compare.active && !isDifference && settings?.swipeEnabled;
+
   return (
-    <div className="canvas-wrap">
-      {scene && <Basemap scene={scene} />}
-      <canvas
-        ref={canvasRef}
-        // Transparent to the eye in explore mode, but still the element that
-        // receives pan and zoom, so both states share one set of handlers.
-        className={timelapse.active ? 'map science locked' : 'map'}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-        onWheel={onWheel}
-      />
+    <div className={`canvas-wrap${splatScene ? ' splat-active' : ''}`} ref={containerRef}>
+      <div className={`map-view-2d${globeMode ? ' inactive' : ''}`}>
+        {scene && <Basemap scene={scene} />}
+        <canvas
+          ref={canvasRef}
+          className={compare.active ? 'map science' : `map${markMode ? ' marking' : ''}`}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          onLostPointerCapture={endDrag}
+          onWheel={onWheel}
+        />
+        {aoiSelection && explorer2d && <div className="aoi-marquee" aria-hidden="true" style={{
+          left: Math.min(aoiSelection.start.x, aoiSelection.current.x),
+          top: Math.min(aoiSelection.start.y, aoiSelection.current.y),
+          width: Math.abs(aoiSelection.current.x - aoiSelection.start.x),
+          height: Math.abs(aoiSelection.current.y - aoiSelection.start.y),
+        }} />}
+      </div>
+      {splatScene && <SplatView active sceneMeta={splatScene} entryBounds={splatEntryBounds!} onClose={() => setSplatScene(null)} />}
+      {explorer2d && <div className="urban-tools">
+        <button type="button" className="secondary" aria-pressed={markMode} onClick={() => {
+          setMarkMode((value) => !value); setMarkedBounds(null); setAoiSelection(null);
+        }}>Mark Area</button>
+        <span>or Shift + drag</span>
+        {SKYFALL_SCENES.map((city) => <button type="button" className="secondary" key={city.id} onClick={() => {
+          setMarkedBounds(null); setAoiSelection(null); scene?.fitBounds(city.bounds);
+        }}>{city.city === 'JAX' ? 'Jacksonville' : 'New York City'}</button>)}
+        {markedBounds && <button type="button" className="secondary" onClick={() => { setMarkedBounds(null); setAoiSelection(null); }}>Clear area</button>}
+      </div>}
+      {explorer2d && (detectedScene || markedBounds) && <div className="urban-prompt" role="status">
+        {detectedScene ? <><span>{detectedScene.name} · 3D scene detected</span><button type="button" className="primary" onClick={() => { setSplatEntryBounds(scene!.viewBounds()); setSplatScene(detectedScene); }}>Switch to 3D Urban View</button></> : <span>No Skyfall 3D scene in this area. Try Jacksonville or New York City.</span>}
+      </div>}
+      {scene && settings && (
+        <GlobeView
+          active={globeMode && !splatScene}
+          client={scene.client}
+          context={scene.gpuContext}
+          sceneA={compare.active ? compare.a : null}
+          sceneB={compare.active ? compare.b : null}
+          settings={settings}
+          center={camera.center}
+        />
+      )}
+
+      <button
+        type="button"
+        className="map-mode-toggle"
+        hidden={!!splatScene}
+        aria-pressed={globeMode}
+        onClick={() => setGlobeMode((current) => !current)}
+      >
+        {globeMode ? '2D map' : '3D globe'}
+      </button>
+
       {status.phase === 'error' && (
         <div className="banner error">
           <p>{status.message}</p>
           <p className="hint">
-            The map works without it, but timelapse frames are processed on the GPU. On Linux, Chrome usually needs
+            The map works without it, but comparison frames are processed on the GPU. On Linux, Chrome usually needs
             <code> --enable-unsafe-webgpu</code> or <code> --enable-features=Vulkan</code>.
           </p>
         </div>
       )}
-      {scene && timelapse.active && <TimelapsePlayer scene={scene} state={timelapse} />}
+
+      {/* Floating date badges on map during comparison */}
+      {compare.active && compare.a && compare.b && (
+        <>
+          <div className="swipe-map-badge left">
+            <span className="badge-tag">◀ Left Scene (Date A)</span>
+            <strong>{compare.a.datetime.slice(0, 10)}</strong>
+            {compare.a.cloudCover != null && (
+              <span className="dim">{Math.round(compare.a.cloudCover)}% cloud</span>
+            )}
+          </div>
+          <div className="swipe-map-badge right">
+            <span className="badge-tag">Right Scene (Date B) ▶</span>
+            <strong>{compare.b.datetime.slice(0, 10)}</strong>
+            {compare.b.cloudCover != null && (
+              <span className="dim">{Math.round(compare.b.cloudCover)}% cloud</span>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Draggable swipe divider on map */}
+      {showSwipeSeam && settings && scene && (
+        <SwipeDivider
+          swipe={settings.swipe}
+          onSwipeChange={(fraction) => scene.setSwipe(fraction)}
+          containerRef={containerRef}
+        />
+      )}
+
+      {/* HUD overlay */}
       <div className="hud">
-        {timelapse.active && <LoadingBars stats={stats} timelapse />}
+        {compare.active && (
+          <div className="compare-status-hud">
+            {stats.neededTiles > 0 && stats.neededDone < stats.neededTiles ? (
+              <span className="loading-pill">⚡ Streaming tiles ({stats.neededDone}/{stats.neededTiles})…</span>
+            ) : (
+              <span className="ready-pill">✓ Ready</span>
+            )}
+          </div>
+        )}
         <div className="hud-row">
           <span>
             {camera.zoom.toFixed(2)}z · {camera.center.lat.toFixed(4)}, {camera.center.lon.toFixed(4)}
           </span>
+          {compare.active && (
+            <span className="mode-chip compare">
+              ⇄ Swipe Comparison Mode
+            </span>
+          )}
+          {!compare.active && (
+            <span className="mode-chip explore">
+              ● Explore Mode
+            </span>
+          )}
           {stats.failed > 0 && (
             <span className="warn" title={stats.lastTileError ?? undefined}>
               {stats.failed} unavailable{stats.lastTileError ? ' · retrying' : ''}
             </span>
           )}
-          {timelapse.active && stats.firstImageMs != null && (
+          {compare.active && stats.firstImageMs != null && (
             <span>first frame {(stats.firstImageMs / 1000).toFixed(2)} s</span>
           )}
-          {timelapse.active && (
-            <span className="locked-chip" title="Map bounds are frozen to this view during timeline playback">
-              🔒 Timeline Bounds Frozen
-            </span>
-          )}
-          <span className="attribution">{timelapse.active ? timelapse.frames[timelapse.index]?.attribution : BASEMAP_ATTRIBUTION}</span>
+          <span className="attribution">{compare.active ? (compare.a?.attribution ?? '') : BASEMAP_ATTRIBUTION}</span>
         </div>
       </div>
+
       {inspection && <PixelReadout value={inspection} top />}
     </div>
   );
 }
 
-function LoadingBars({ stats, timelapse }: { stats: MapStats; timelapse: boolean }): React.JSX.Element {
-  const { neededTiles, neededDone, inFlight } = stats;
-  const viewFraction = neededTiles > 0 ? neededDone / neededTiles : 0;
-  const active = inFlight.waiting + inFlight.downloading;
-  const byteFraction = inFlight.totalBytes > 0 ? inFlight.loadedBytes / inFlight.totalBytes : 0;
-  const mib = (bytes: number): string => (bytes / 1048576).toFixed(2);
-  let activeLabel = 'No requests in flight';
-  if (inFlight.downloading > 0) {
-    activeLabel = `Downloading ${inFlight.downloading} · ${mib(inFlight.loadedBytes)} / ${mib(inFlight.totalBytes)} MiB`;
-  } else if (inFlight.waiting > 0) {
-    const unit = timelapse ? 'frame' : 'tile';
-    activeLabel = `Server building ${inFlight.waiting} ${unit}${inFlight.waiting === 1 ? '' : 's'} · ${((inFlight.oldestMs ?? 0) / 1000).toFixed(1)} s`;
-  }
-  if (inFlight.queued > 0) activeLabel += ` · ${inFlight.queued} queued`;
-  return (
-    <div className="loading-bars">
-      <div className="loading-bar">
-        <span className="label">{timelapse ? 'Timelapse frames' : 'Tiles for this view'}</span>
-        <div className="track"><div className="fill" style={{ width: `${viewFraction * 100}%` }} /></div>
-        <span className="value">{neededDone} / {neededTiles}</span>
-      </div>
-      <div className="loading-bar">
-        <span className="label">Active requests</span>
-        <div className={`track${inFlight.waiting > 0 && inFlight.downloading === 0 ? ' waiting' : ''}`}>
-          <div className="fill" style={{ width: `${active > 0 ? byteFraction * 100 : 0}%` }} />
-        </div>
-        <span className="value">{activeLabel}</span>
-      </div>
-    </div>
-  );
-}
-
-function VegetationGraph({
-  scene,
-  state,
-  onClose,
+/**
+ * Interactive vertical swipe divider handle overlaid on the map canvas.
+ */
+function SwipeDivider({
+  swipe,
+  onSwipeChange,
+  containerRef,
 }: {
-  scene: MapScene;
-  state: TimelapseState;
-  onClose: () => void;
-}): React.JSX.Element | null {
-  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
-  const count = state.frames.length;
-  if (count === 0) return null;
+  swipe: number;
+  onSwipeChange: (fraction: number) => void;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+}): React.JSX.Element {
+  const isDragging = useRef(false);
 
-  const width = 800;
-  const height = 100;
-  const padLeft = 40;
-  const padRight = 20;
-  const padTop = 15;
-  const padBottom = 22;
-  const plotWidth = width - padLeft - padRight;
-  const plotHeight = height - padTop - padBottom;
-
-  const getX = (index: number): number => {
-    return padLeft + (count > 1 ? (index / (count - 1)) * plotWidth : plotWidth / 2);
+  const updateFromPointer = (clientX: number): void => {
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    onSwipeChange(fraction);
   };
 
-  const getY = (ndvi: number): number => {
-    const clamped = Math.max(0, Math.min(1, ndvi));
-    return padTop + (1 - clamped) * plotHeight;
+  const onPointerDown = (e: React.PointerEvent): void => {
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    isDragging.current = true;
+    updateFromPointer(e.clientX);
   };
 
-  const loadedPoints = state.frames
-    .map((_, i) => {
-      const stats = state.viewVegetation[i];
-      if (!stats) return null;
-      return { x: getX(i), y: getY(stats.meanNdvi), index: i };
-    })
-    .filter((pt): pt is { x: number; y: number; index: number } => pt != null);
+  const onPointerMove = (e: React.PointerEvent): void => {
+    if (!isDragging.current) return;
+    e.stopPropagation();
+    updateFromPointer(e.clientX);
+  };
 
-  const pathD = loadedPoints.length > 1
-    ? loadedPoints.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`).join(' ')
-    : '';
-
-  const areaD = loadedPoints.length > 1
-    ? `${pathD} L ${loadedPoints[loadedPoints.length - 1].x.toFixed(1)} ${(padTop + plotHeight).toFixed(1)} L ${loadedPoints[0].x.toFixed(1)} ${(padTop + plotHeight).toFixed(1)} Z`
-    : '';
-
-  const currentStats = state.viewVegetation[state.index];
-  const hoveredItem = hoveredIdx != null ? {
-    index: hoveredIdx,
-    frame: state.frames[hoveredIdx],
-    stats: state.viewVegetation[hoveredIdx],
-    cloud: state.viewCloud[hoveredIdx],
-    excluded: state.excluded[hoveredIdx],
-  } : null;
-
-  const thresholdY = getY(0.25);
+  const onPointerUp = (e: React.PointerEvent): void => {
+    if (!isDragging.current) return;
+    e.stopPropagation();
+    isDragging.current = false;
+  };
 
   return (
-    <div className="vegetation-graph">
-      <div className="graph-header">
-        <div className="graph-title">
-          <span className="graph-icon">📈</span>
-          <strong>Vegetation Trend</strong>
-          <span className="graph-subtitle">Mean NDVI over view</span>
-          {currentStats && (
-            <span className="current-ndvi-pill">
-              NDVI: <strong>{currentStats.meanNdvi.toFixed(2)}</strong> · {Math.round(currentStats.vegetationPercent)}% green cover
-            </span>
-          )}
-        </div>
-        <div className="graph-actions">
-          <button
-            type="button"
-            className="secondary mini-btn"
-            title="Drop all scenes with over 30% clouds in this view"
-            onClick={() => scene.dropCloudyFrames(0.3)}
-          >
-            ☁️ Drop Cloudy (&gt;30%)
-          </button>
-          <button
-            type="button"
-            className="secondary mini-btn"
-            title="Restore all removed dates"
-            onClick={() => scene.restoreAllFrames()}
-          >
-            ↺ Restore All
-          </button>
-          <button
-            type="button"
-            className="secondary mini-btn close-btn"
-            title="Close graph"
-            onClick={onClose}
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-
-      <div className="graph-svg-wrap">
-        <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="graph-svg">
-          <defs>
-            <linearGradient id="vegAreaGradient" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#10b981" stopOpacity="0.4" />
-              <stop offset="100%" stopColor="#10b981" stopOpacity="0.02" />
-            </linearGradient>
-          </defs>
-
-          {/* Guidelines */}
-          <line x1={padLeft} y1={padTop} x2={width - padRight} y2={padTop} stroke="rgba(255,255,255,0.08)" strokeDasharray="3,3" />
-          <line x1={padLeft} y1={getY(0.5)} x2={width - padRight} y2={getY(0.5)} stroke="rgba(255,255,255,0.08)" strokeDasharray="3,3" />
-          <line x1={padLeft} y1={thresholdY} x2={width - padRight} y2={thresholdY} stroke="rgba(16, 185, 129, 0.3)" strokeDasharray="4,4" />
-          <line x1={padLeft} y1={padTop + plotHeight} x2={width - padRight} y2={padTop + plotHeight} stroke="rgba(255,255,255,0.15)" />
-
-          {/* Y Axis Labels */}
-          <text x={padLeft - 6} y={padTop + 4} textAnchor="end" fill="rgba(255,255,255,0.4)" fontSize="9" fontFamily="monospace">1.0</text>
-          <text x={padLeft - 6} y={getY(0.5) + 3} textAnchor="end" fill="rgba(255,255,255,0.4)" fontSize="9" fontFamily="monospace">0.5</text>
-          <text x={padLeft - 6} y={thresholdY + 3} textAnchor="end" fill="#10b981" fontSize="9" fontFamily="monospace">0.25</text>
-          <text x={padLeft - 6} y={padTop + plotHeight + 3} textAnchor="end" fill="rgba(255,255,255,0.4)" fontSize="9" fontFamily="monospace">0.0</text>
-
-          {/* Filled Area & Line */}
-          {areaD && <path d={areaD} fill="url(#vegAreaGradient)" />}
-          {pathD && <path d={pathD} fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
-
-          {/* Vertical cursor for current frame */}
-          <line
-            x1={getX(state.index)}
-            y1={padTop}
-            x2={getX(state.index)}
-            y2={padTop + plotHeight}
-            stroke="#58a6ff"
-            strokeWidth="1.5"
-            strokeDasharray="3,2"
-          />
-
-          {/* Interactive Date Points */}
-          {state.frames.map((frame, i) => {
-            const x = getX(i);
-            const stats = state.viewVegetation[i];
-            const cloud = state.viewCloud[i];
-            const hasStats = stats != null;
-            const y = hasStats ? getY(stats.meanNdvi) : padTop + plotHeight;
-            const isCurrent = i === state.index;
-            const isCloudy = cloud != null && cloud > 0.3;
-            const isExcluded = state.excluded[i];
-
-            let fillColor = '#10b981';
-            if (isExcluded) fillColor = 'rgba(255,255,255,0.2)';
-            else if (isCloudy) fillColor = '#94a3b8';
-
-            return (
-              <g
-                key={frame.id}
-                className="graph-point-group"
-                cursor="pointer"
-                onClick={() => scene.seek(i)}
-                onMouseEnter={() => setHoveredIdx(i)}
-                onMouseLeave={() => setHoveredIdx(null)}
-              >
-                <rect x={x - 8} y={padTop} width={16} height={plotHeight + 15} fill="transparent" />
-                {isCurrent && (
-                  <circle cx={x} cy={y} r="7" fill="none" stroke="#58a6ff" strokeWidth="1.5" />
-                )}
-                {hasStats ? (
-                  <circle
-                    cx={x}
-                    cy={y}
-                    r={isCurrent ? '4.5' : '3'}
-                    fill={fillColor}
-                    stroke={isCurrent ? '#ffffff' : 'rgba(0,0,0,0.5)'}
-                    strokeWidth="1"
-                  />
-                ) : (
-                  <circle
-                    cx={x}
-                    cy={padTop + plotHeight}
-                    r="2"
-                    fill="rgba(255,255,255,0.2)"
-                  />
-                )}
-              </g>
-            );
-          })}
-        </svg>
-
-        {hoveredItem && (
-          <div
-            className="graph-tooltip"
-            style={{
-              left: `${Math.min(85, Math.max(15, (getX(hoveredItem.index) / width) * 100))}%`,
-            }}
-          >
-            <strong>{hoveredItem.frame.datetime.slice(0, 10)}</strong>
-            {hoveredItem.stats ? (
-              <span> · NDVI: <strong>{hoveredItem.stats.meanNdvi.toFixed(2)}</strong> ({Math.round(hoveredItem.stats.vegetationPercent)}% green)</span>
-            ) : (
-              <span> · Loading…</span>
-            )}
-            {hoveredItem.cloud != null && (
-              <span> · {Math.round(hoveredItem.cloud * 100)}% cloud</span>
-            )}
-            {hoveredItem.excluded && <span className="tooltip-tag warn"> · Dropped</span>}
-          </div>
-        )}
+    <div
+      className="swipe-divider-wrap"
+      style={{ left: `${swipe * 100}%` }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+    >
+      <div className="swipe-line" />
+      <div className="swipe-handle" title="Drag to swipe between scenes">
+        <span className="swipe-arrow">◀</span>
+        <span className="swipe-bar">❚❚</span>
+        <span className="swipe-arrow">▶</span>
       </div>
     </div>
   );
-}
-
-/**
- * Video-style controls for a locked-view timelapse. The strip under the scrub
- * bar is one segment per date: it fills as each frame arrives, and clicking a
- * segment removes that date from playback (click again to restore).
- */
-function TimelapsePlayer({ scene, state }: { scene: MapScene; state: TimelapseState }): React.JSX.Element {
-  const [showGraph, setShowGraph] = useState(true);
-  const count = state.frames.length;
-  const current = state.frames[state.index];
-  const removed = state.excluded.filter(Boolean).length;
-  const currentRemoved = state.excluded[state.index] ?? false;
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
-      if (event.code === 'Space') {
-        event.preventDefault();
-        if (scene.timelapse.playing) scene.pause();
-        else scene.play();
-      } else if (event.code === 'ArrowRight') scene.seek(scene.timelapse.index + 1);
-      else if (event.code === 'ArrowLeft') scene.seek(scene.timelapse.index - 1);
-      else if (event.code === 'Delete' || event.code === 'Backspace') {
-        event.preventDefault();
-        scene.toggleFrame(scene.timelapse.index);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [scene]);
-
-  return (
-    <div className="player-container">
-      {showGraph && (
-        <VegetationGraph
-          scene={scene}
-          state={state}
-          onClose={() => setShowGraph(false)}
-        />
-      )}
-      <div className="player">
-        <button
-          type="button"
-          className="play"
-          aria-label={state.playing ? 'Pause' : 'Play'}
-          onClick={() => (state.playing ? scene.pause() : scene.play())}
-        >
-          {state.playing ? '❚❚' : '▶'}
-        </button>
-        <div className="scrub">
-          <input
-            type="range"
-            min={0}
-            max={Math.max(0, count - 1)}
-            step={1}
-            value={state.index}
-            aria-label="Timelapse position"
-            onChange={(e) => scene.seek(Number(e.target.value))}
-          />
-          <div className="buffer" role="group" aria-label="Dates: click to remove or restore">
-            {state.status.map((s, i) => {
-              const frame = state.frames[i];
-              const off = state.excluded[i];
-              const label = `${frame.datetime.slice(0, 10)} · ${cloudText(state, i)}${state.autoRemoved[i] ? ' · auto-removed (cloudy)' : ''}`;
-              return (
-                <button
-                  key={frame.id}
-                  type="button"
-                  className={`segment ${s}${off ? ' excluded' : ''}${i === state.index ? ' current' : ''}`}
-                  title={`${label} — click to ${off ? 'restore' : 'remove'}`}
-                  aria-label={`${label}, ${off ? 'removed, click to restore' : 'click to remove'}`}
-                  aria-pressed={off}
-                  onClick={() => scene.toggleFrame(i)}
-                />
-              );
-            })}
-          </div>
-        </div>
-        <span className="frame-date">
-          <strong className={currentRemoved ? 'struck' : undefined}>{current?.datetime.slice(0, 10)}</strong> · {state.index + 1}/{count}
-          {current && ` · ${cloudText(state, state.index)}`}
-          {state.autoRemoved[state.index] && <span className="dim"> · auto-removed</span>}
-          {removed > 0 && <span className="dim"> · {removed} removed</span>}
-          {state.buffering && <span className="dim"> · buffering…</span>}
-          {state.status[state.index] === 'failed' && <span className="warn"> · unavailable</span>}
-        </span>
-        <button
-          type="button"
-          className={`secondary graph-toggle-btn${showGraph ? ' active' : ''}`}
-          title="Toggle vegetation trend graph"
-          onClick={() => setShowGraph(!showGraph)}
-        >
-          📈 Graph
-        </button>
-        <button
-          type="button"
-          className="secondary remove-date"
-          title="Delete key"
-          onClick={() => scene.toggleFrame(state.index)}
-        >
-          {currentRemoved ? 'Restore date' : 'Remove date'}
-        </button>
-        <select
-          value={state.fps}
-          aria-label="Playback speed"
-          onChange={(e) => scene.setPlayback({ fps: Number(e.target.value) })}
-        >
-          {[1, 2, 4, 8, 12].map((fps) => <option key={fps} value={fps}>{fps} fps</option>)}
-        </select>
-        <label className="loop">
-          <input type="checkbox" checked={state.loop} onChange={(e) => scene.setPlayback({ loop: e.target.checked })} />
-          Loop
-        </label>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Cloud for one frame: measured over the view once the frame is loaded,
- * otherwise the catalog's granule-wide figure, labelled as such.
- */
-function cloudText(state: TimelapseState, index: number): string {
-  const view = state.viewCloud[index];
-  if (view != null) return `${Math.round(view * 100)}% cloud in view`;
-  const granule = state.frames[index]?.cloudCover;
-  return granule != null ? `${granule.toFixed(0)}% cloud (scene)` : 'cloud unknown';
 }
 
 function PixelReadout({ value, top }: { value: PixelInspection; top: boolean }): React.JSX.Element {
   return (
     <div className={top ? 'pixel-readout top' : 'pixel-readout'}>
       <strong>{value.status}</strong> · {value.lat.toFixed(5)}, {value.lon.toFixed(5)}
-      {value.date && <><br />{value.date.slice(0, 10)}</>}
+      {value.date && <><br />Scene date: <strong>{value.date.slice(0, 10)}</strong></>}
       {value.status === 'valid' && (
-        <><br />R {value.red?.toFixed(4)} · G {value.green?.toFixed(4)} · B {value.blue?.toFixed(4)} · NIR {value.nir?.toFixed(4)} · NDVI {value.ndvi?.toFixed(4)}</>
+        <><br />R {value.red?.toFixed(4)} · G {value.green?.toFixed(4)} · B {value.blue?.toFixed(4)} · NIR {value.nir?.toFixed(4)} · <strong>NDVI {value.ndvi?.toFixed(4)}</strong></>
       )}
-      {value.status === 'masked' && <><br />Excluded by validity/quality policy</>}
+      {value.status === 'masked' && <><br />Excluded by cloud/quality mask</>}
     </div>
   );
 }
-
 
 function Sidebar({
   scene,
@@ -599,9 +461,15 @@ function Sidebar({
   const [config, setConfig] = useState<DatasetConfig | null>(null);
   const [maxCloud, setMaxCloud] = useState<number>(50);
   const searchRun = useRef(0);
-  const [finding, setFinding] = useState<{ busy: boolean; message: string | null; error: boolean }>({ busy: false, message: null, error: false });
-  const timelapse = useTimelapse(scene);
+  const [finding, setFinding] = useState<{ busy: boolean; message: string | null; error: boolean }>({
+    busy: false,
+    message: null,
+    error: false,
+  });
+  const compare = useCompare(scene);
   const camera = useCamera(scene);
+  const settings = useSceneSettings(scene);
+  const stats = useSceneStats(scene);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -609,10 +477,11 @@ function Sidebar({
     return () => controller.abort();
   }, [client]);
 
-  // "19 dates found" describes the timelapse just left; it is noise in explore.
   useEffect(() => {
-    if (!timelapse.active) setFinding((f) => (f.error ? f : { busy: f.busy, message: null, error: false }));
-  }, [timelapse.active]);
+    if (!compare.active) {
+      setFinding((f) => (f.error ? f : { busy: f.busy, message: null, error: false }));
+    }
+  }, [compare.active]);
 
   const goTo = (place: Place): void => {
     if (!scene) return;
@@ -621,64 +490,70 @@ function Sidebar({
   };
 
   /**
-   * Play: collect every acquisition overlapping the view in the date range,
-   * then hand them to the scene, which locks the view and loads frames. The
-   * whole view is searched, not just its centre, because a view near a
-   * granule edge needs the neighbouring granules of the same pass to be
-   * complete; selectFrames groups them into one frame per date.
+   * Compare scenes: find acquisitions covering the view in the date range,
+   * pick 2 scenes closest to `dates.from` and `dates.to`, and start the comparison.
    */
-  const play = async (): Promise<void> => {
+  const startCompareMode = async (): Promise<void> => {
     if (!scene) return;
     const view = scene.viewBounds();
-    // Dates are chosen for this exact view, so this is the view frames must be
-    // read for, even if the map is moved while the search runs.
     const { center, zoom } = scene.camera;
-    setFinding({ busy: true, message: 'Finding dates…', error: false });
+    setFinding({ busy: true, message: 'Searching scenes for this view…', error: false });
     try {
       const run = ++searchRun.current;
-      const { scenes, truncatedMonths, searched } = await searchView(client, view, dates.from, dates.to, (done, total) => {
-        // Only the latest search may report progress; a superseded or failed
-        // one must not flip the button back to busy.
-        if (total > 1 && run === searchRun.current) setFinding({ busy: true, message: `Finding dates… ${done}/${total} months`, error: false });
-      });
+      const { scenes, truncatedMonths, searched } = await searchView(
+        client,
+        view,
+        dates.from,
+        dates.to,
+        (done, total) => {
+          if (total > 1 && run === searchRun.current) {
+            setFinding({ busy: true, message: `Searching scenes… ${done}/${total} months`, error: false });
+          }
+        },
+      );
       if (!searched) {
-        setFinding({ busy: false, error: true, message: `Sentinel-2 data starts on ${MISSION_START}; pick dates from then to today.` });
-        return;
-      }
-      // Filter scenes by the user's selected maximum cloud cover threshold
-      const selection = selectFramesForView(scenes, view, maxCloud);
-      let frames = selection.frames;
-      const skipped = [
-        selection.partial > 0 ? `${selection.partial} only partly imaged this view` : '',
-      ].filter(Boolean).join(', ');
-      if (frames.length === 0) {
         setFinding({
           busy: false,
           error: true,
-          message: `No complete dates for this view between ${dates.from} and ${dates.to} with <=${maxCloud}% clouds${skipped ? ` (${skipped})` : ''}. Try increasing the cloud limit, moving the view, or widening the dates.`,
+          message: `Sentinel-2 data starts on ${MISSION_START}; pick dates from then to today.`,
         });
         return;
       }
-      let note = `${frames.length} date${frames.length === 1 ? '' : 's'} found.${skipped ? ` Skipped: ${skipped}.` : ''}`;
-      if (maxCloud < 100) {
-        note += ` Filtered out scenes with >${maxCloud}% clouds.`;
+      const selection = selectFramesForView(scenes, view, maxCloud);
+      const frames = selection.frames;
+      const skipped = [
+        selection.partial > 0 ? `${selection.partial} only partly imaged this view` : '',
+      ].filter(Boolean).join(', ');
+
+      if (frames.length < 2) {
+        setFinding({
+          busy: false,
+          error: true,
+          message: `Need at least 2 complete scenes for this view between ${dates.from} and ${dates.to} with <=${maxCloud}% clouds (found ${frames.length}${skipped ? `, skipped: ${skipped}` : ''}). Try increasing the cloud limit, moving the view, or widening the dates.`,
+        });
+        return;
       }
-      if (frames.length > MAX_TIMELAPSE_FRAMES) {
-        // Even time slots, clearest date in each: no uneven jumps, fewer clouds.
-        const found = frames.length;
-        // Slots span the dates that exist, not the dates asked for: a range
-        // starting before the archive would otherwise leave half of them empty.
-        frames = pickBySlots(frames, frames[0].datetime.slice(0, 10), frames[frames.length - 1].datetime.slice(0, 10), MAX_TIMELAPSE_FRAMES);
-        note += ` Showing ${frames.length} of ${found}: the clearest date in each of ${MAX_TIMELAPSE_FRAMES} even time slots.`;
+
+      const pair = pickComparisonPair(frames, dates.from, dates.to);
+      if (!pair) {
+        setFinding({
+          busy: false,
+          error: true,
+          message: `Could not pick 2 distinct dates from the search results. Try widening the date range.`,
+        });
+        return;
       }
-      if (searched.from !== dates.from) {
-        note += ` Sentinel-2 data starts on ${MISSION_START}, so the search began there.`;
+
+      scene.setView(center, zoom);
+      scene.startCompare(pair);
+
+      let note = `Comparing ${pair.a.datetime.slice(0, 10)} (Left) vs ${pair.b.datetime.slice(0, 10)} (Right).`;
+      if (pair.fromGapDays > 0 || pair.toGapDays > 0) {
+        note += ` Nearest dates found (±${Math.max(pair.fromGapDays, pair.toGapDays)} days).`;
       }
       if (truncatedMonths.length > 0) {
-        note += ` Search limit reached in ${truncatedMonths.join(', ')}; some dates there may be missing.`;
+        note += ` Search limit reached in ${truncatedMonths.join(', ')}.`;
       }
-      scene.setView(center, zoom);
-      scene.startTimelapse(frames);
       setFinding({ busy: false, message: note, error: false });
     } catch (error) {
       setFinding({
@@ -689,83 +564,167 @@ function Sidebar({
     }
   };
 
-  const tooWide = camera.zoom < MIN_TIMELAPSE_ZOOM;
-  const autoRemovedCount = timelapse.autoRemoved.filter(Boolean).length;
+  const swapScenes = (): void => {
+    if (!scene || !compare.a || !compare.b) return;
+    scene.startCompare({
+      a: compare.b,
+      b: compare.a,
+      fromGapDays: compare.toGapDays,
+      toGapDays: compare.fromGapDays,
+    });
+  };
+
+  const tooWide = camera.zoom < MIN_COMPARE_ZOOM;
+
   return (
     <aside className="sidebar">
       <header>
         <h1>TerraScope</h1>
-        <p className="tagline">Sentinel-2 on the GPU, read exactly as measured.</p>
+        <p className="tagline">Sentinel-2 on WebGPU, calibrated and read as measured.</p>
       </header>
 
-      {!timelapse.active && (
+      {/* 1. Explore Mode: Location Search */}
+      {!compare.active && (
         <section>
           <h2>Location</h2>
           <PlaceSearch near={camera.center} onPick={goTo} />
-          <p className="small dim">Or drag and scroll the map to frame the area.</p>
+          <p className="small dim">Or drag and scroll the map to frame the area of interest.</p>
         </section>
       )}
 
+      {/* 2. Timeline / Swipe Mode Section */}
       <section>
-        <h2>Timelapse</h2>
-        {timelapse.active ? (
+        <h2>{compare.active ? 'Swipe Comparison' : 'Timeline (Swipe Mode)'}</h2>
+        {compare.active ? (
           <>
-            <div className="frozen-banner">
-              <span>🔒 <strong>Fixed Map Bounds</strong></span>
-              <p className="small dim">Map viewport is frozen to this exact location during timeline playback. Click &quot;Exit timelapse&quot; to unlock and explore.</p>
+            <div className="swipe-banner">
+              <div className="title">
+                <span>⇄ Swipe Mode Active</span>
+                <button
+                  type="button"
+                  className="secondary mini-btn"
+                  onClick={() => scene?.stopCompare()}
+                >
+                  ✕ Exit swipe
+                </button>
+              </div>
+              <p className="small dim">
+                Drag the divider on the map or adjust settings below to compare both scenes.
+              </p>
             </div>
-            <p className="small">
-              {timelapse.frames.length - timelapse.excluded.filter(Boolean).length} of {timelapse.frames.length} dates · {dates.from} → {dates.to}
-            </p>
-            {finding.message && <p className="small dim">{finding.message}</p>}
-            <label>
-              Auto-remove cloudy frames
-              <select
-                value={timelapse.autoCloud == null ? 'off' : String(timelapse.autoCloud)}
-                onChange={(e) => scene?.setAutoCloud(e.target.value === 'off' ? null : Number(e.target.value))}
-              >
-                <option value="off">Off</option>
-                <option value="0.5">More than 50% of the view cloudy</option>
-                <option value="0.3">More than 30% of the view cloudy</option>
-                <option value="0.1">More than 10% of the view cloudy</option>
-              </select>
-            </label>
-            <div className="cloud-action-row">
-              <button
-                type="button"
-                className="secondary mini-btn"
-                title="Drop all scenes with over 30% clouds in this view"
-                onClick={() => scene?.dropCloudyFrames(0.3)}
-              >
-                ☁️ Drop cloudy (&gt;30%)
-              </button>
-              <button
-                type="button"
-                className="secondary mini-btn"
-                title="Restore all removed dates"
-                onClick={() => scene?.restoreAllFrames()}
-              >
-                ↺ Restore all
-              </button>
+
+            {/* Selected Scenes Info Card */}
+            <div className="comparison-card">
+              <div className="scene-pill left">
+                <span className="side-label">◀ Left Map</span>
+                <strong>{compare.a?.datetime.slice(0, 10)}</strong>
+                <span className="dim">
+                  {compare.a?.cloudCover != null ? `${Math.round(compare.a.cloudCover)}% cloud` : 'cloud unknown'}
+                </span>
+                {compare.fromGapDays > 0 && (
+                  <span className="dim small">±{compare.fromGapDays}d from {dates.from}</span>
+                )}
+                <span className={`status-pill ${compare.statusA}`}>
+                  {compare.statusA === 'ready'
+                    ? '✓ Ready'
+                    : stats.neededTiles > 0
+                    ? `⚡ Streaming ${stats.neededDone}/${stats.neededTiles}`
+                    : '⚡ Streaming…'}
+                </span>
+              </div>
+
+              <div className="scene-pill right">
+                <span className="side-label">Right Map ▶</span>
+                <strong>{compare.b?.datetime.slice(0, 10)}</strong>
+                <span className="dim">
+                  {compare.b?.cloudCover != null ? `${Math.round(compare.b.cloudCover)}% cloud` : 'cloud unknown'}
+                </span>
+                {compare.toGapDays > 0 && (
+                  <span className="dim small">±{compare.toGapDays}d from {dates.to}</span>
+                )}
+                <span className={`status-pill ${compare.statusB}`}>
+                  {compare.statusB === 'ready'
+                    ? '✓ Ready'
+                    : stats.neededTiles > 0
+                    ? `⚡ Streaming ${stats.neededDone}/${stats.neededTiles}`
+                    : '⚡ Streaming…'}
+                </span>
+              </div>
             </div>
-            {autoRemovedCount > 0 && (
-              <p className="small dim">{autoRemovedCount} cloudy frame{autoRemovedCount === 1 ? '' : 's'} removed, measured from each frame's own cloud mask. Click a hatched segment to bring one back.</p>
+
+            {/* Swipe Position Control */}
+            {settings && (
+              <div className="swipe-controls">
+                <label>
+                  Swipe divider: {Math.round(settings.swipe * 100)}%
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={settings.swipe}
+                    onChange={(e) => scene?.setSwipe(Number(e.target.value))}
+                  />
+                </label>
+                <div className="swipe-presets">
+                  <button
+                    type="button"
+                    className="secondary mini-btn"
+                    onClick={() => scene?.setSwipe(0.25)}
+                  >
+                    25%
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary mini-btn"
+                    onClick={() => scene?.setSwipe(0.5)}
+                  >
+                    50% (Center)
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary mini-btn"
+                    onClick={() => scene?.setSwipe(0.75)}
+                  >
+                    75%
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary mini-btn"
+                    title="Swap left and right dates"
+                    onClick={swapScenes}
+                  >
+                    ⇄ Swap
+                  </button>
+                </div>
+              </div>
             )}
-            <p className="small dim">View locked. Space plays and pauses; arrow keys step. Click a date segment under the timeline, or press Delete, to remove it.</p>
-            <button type="button" className="secondary" onClick={() => scene?.stopTimelapse()}>
-              Exit timelapse
-            </button>
           </>
         ) : (
           <>
+            <p className="small dim">
+              Select a date range. The app will automatically select and compare the 2 clearest scenes near those dates.
+            </p>
             <div className="grid2">
               <label>
-                From
-                <input type="date" value={dates.from} min={MISSION_START} max={dates.to} onChange={(e) => onDatesChange({ ...dates, from: e.target.value })} />
+                From date
+                <input
+                  type="date"
+                  value={dates.from}
+                  min={MISSION_START}
+                  max={dates.to}
+                  onChange={(e) => onDatesChange({ ...dates, from: e.target.value })}
+                />
               </label>
               <label>
-                To
-                <input type="date" value={dates.to} min={dates.from} max={new Date().toISOString().slice(0, 10)} onChange={(e) => onDatesChange({ ...dates, to: e.target.value })} />
+                To date
+                <input
+                  type="date"
+                  value={dates.to}
+                  min={dates.from}
+                  max={new Date().toISOString().slice(0, 10)}
+                  onChange={(e) => onDatesChange({ ...dates, to: e.target.value })}
+                />
               </label>
             </div>
             <label>
@@ -778,20 +737,36 @@ function Sidebar({
                 <option value={100}>Any (include cloudy scenes)</option>
               </select>
             </label>
-            <button type="button" className="primary" disabled={!scene || finding.busy || tooWide} onClick={() => void play()}>
-              {finding.busy ? 'Finding dates…' : '▶ Play timelapse'}
+            <button
+              type="button"
+              className="primary"
+              disabled={!scene || finding.busy || tooWide}
+              onClick={() => void startCompareMode()}
+            >
+              {finding.busy ? 'Searching scenes…' : '▶ Compare scenes (Swipe)'}
             </button>
             {tooWide ? (
-              <p className="small dim">Zoom in to level {MIN_TIMELAPSE_ZOOM} or closer to play a timelapse of this view.</p>
+              <p className="small dim">Zoom in to level {MIN_COMPARE_ZOOM} or closer to compare scenes for this view.</p>
             ) : (
-              <p className="small dim">Plays every date covering this view. The view locks while playing.</p>
+              <p className="small dim">Loads the 2 nearest acquisitions covering this view and opens swipe comparison.</p>
             )}
-            {finding.message && <p className={finding.error ? 'error small' : 'small dim'}>{finding.message}</p>}
+            {finding.message && (
+              <p className={finding.error ? 'error small' : 'small dim'}>{finding.message}</p>
+            )}
           </>
         )}
       </section>
 
-      {scene && timelapse.active && <FramePanels scene={scene} timelapse={timelapse} dates={dates} client={client} config={config} />}
+      {/* Right-side panel settings (active in swipe mode or explore) */}
+      {scene && compare.active && (
+        <SettingsAndAnalysis
+          scene={scene}
+          compare={compare}
+          dates={dates}
+          client={client}
+          config={config}
+        />
+      )}
 
       <GpuFooter scene={scene} />
       <PerformancePanel scene={scene} />
@@ -799,34 +774,39 @@ function Sidebar({
   );
 }
 
-/** Layer, legend and statistics for the frame on screen. Timelapse state only. */
-function FramePanels({
+/** Layer settings, display adjustments, legend and area analysis. */
+function SettingsAndAnalysis({
   scene,
-  timelapse,
+  compare,
   dates,
   client,
   config,
 }: {
   scene: MapScene;
-  timelapse: TimelapseState;
+  compare: CompareState;
   dates: Dates;
   client: RasterClient;
   config: DatasetConfig | null;
 }): React.JSX.Element {
   const settings = useSceneSettings(scene);
-  const layer = settings?.layer ?? 'natural';
-  const [analysis, setAnalysis] = useState<{ busy: boolean; error: string | null; value: RegionStatsResponse | null }>({ busy: false, error: null, value: null });
+  const layer = settings?.layer ?? 'vegetation';
+  const [analysis, setAnalysis] = useState<{ busy: boolean; error: string | null; value: RegionStatsResponse | null }>({
+    busy: false,
+    error: null,
+    value: null,
+  });
   const [resolutionM, setResolutionM] = useState(100);
-  const current = timelapse.frames[timelapse.index];
+  const currentScene = compare.a || compare.b;
 
   const runAnalysis = async (): Promise<void> => {
-    if (!current || !config) return;
+    if (!currentScene || !config) return;
     const view = scene.viewBounds();
     setAnalysis({ busy: true, error: null, value: null });
     try {
       const value = await client.regionStats({
-        collection: current.collection,
-        sceneA: current.id,
+        collection: currentScene.collection,
+        sceneA: compare.a?.id ?? currentScene.id,
+        sceneB: compare.b?.id,
         bbox: [view.west, view.south, view.east, view.north],
         resolutionM,
         qualityPolicy: config.qualityPolicy,
@@ -840,45 +820,98 @@ function FramePanels({
   return (
     <>
       <section>
-        <h2>Layer</h2>
+        <h2>Map Layer</h2>
         <div className="layers">
           {LAYERS.map((l) => (
             <button
               key={l.id}
               type="button"
-              className={l.id === layer ? 'chip selected' : 'chip'}
+              className={`chip${l.id === 'vegetation' ? ' vegetation-chip' : ''}${l.id === layer ? ' selected' : ''}`}
+              title={l.description}
               onClick={() => scene.updateSettings({ layer: l.id })}
             >
-              {l.label}
+              {l.icon} {l.label}
             </button>
           ))}
         </div>
+
+        {layer === 'vegetation' && (
+          <p className="small dim">
+            Highlights living vegetation in green (NDVI ≥ 0.25). Drag the swipe divider to compare vegetation between the two dates!
+          </p>
+        )}
+
         {layer === 'band' && (
           <label>
             Band
-            <select value={settings?.band ?? 'nir'} onChange={(e) => scene.updateSettings({ band: e.target.value as RampBand })}>
+            <select
+              value={settings?.band ?? 'nir'}
+              onChange={(e) => scene.updateSettings({ band: e.target.value as RampBand })}
+            >
               {(Object.keys(BAND_LABELS) as RampBand[]).map((b) => (
                 <option key={b} value={b}>{BAND_LABELS[b]}</option>
               ))}
             </select>
           </label>
         )}
+
         <label>
           Brightness: {settings?.exposure.toFixed(2)}
-          <input type="range" min={0.4} max={2.5} step={0.05} value={settings?.exposure ?? 1} onChange={(e) => scene.updateSettings({ exposure: Number(e.target.value) })} />
+          <input
+            type="range"
+            min={0.4}
+            max={2.5}
+            step={0.05}
+            value={settings?.exposure ?? 1}
+            onChange={(e) => scene.updateSettings({ exposure: Number(e.target.value) })}
+          />
         </label>
+
         <label>
           Gamma: {settings?.gamma.toFixed(2)}
-          <input type="range" min={0.4} max={2.2} step={0.05} value={settings?.gamma ?? 1} onChange={(e) => scene.updateSettings({ gamma: Number(e.target.value) })} />
+          <input
+            type="range"
+            min={0.4}
+            max={2.2}
+            step={0.05}
+            value={settings?.gamma ?? 1}
+            onChange={(e) => scene.updateSettings({ gamma: Number(e.target.value) })}
+          />
         </label>
+
         <label className="checkbox">
-          <input type="checkbox" checked={settings?.qualityMask ?? true} onChange={(e) => scene.updateSettings({ qualityMask: e.target.checked })} />
+          <input
+            type="checkbox"
+            checked={settings?.qualityMask ?? true}
+            onChange={(e) => scene.updateSettings({ qualityMask: e.target.checked })}
+          />
           Apply cloud and quality mask
         </label>
+
         {layer === 'ndvi' && (
           <div className="grid2">
-            <label>NDVI min<input type="number" min={-1} max={0.99} step={0.05} value={settings?.ndviMin ?? -1} onChange={(e) => scene.updateSettings({ ndviMin: Number(e.target.value) })} /></label>
-            <label>NDVI max<input type="number" min={-0.99} max={1} step={0.05} value={settings?.ndviMax ?? 1} onChange={(e) => scene.updateSettings({ ndviMax: Number(e.target.value) })} /></label>
+            <label>
+              NDVI min
+              <input
+                type="number"
+                min={-1}
+                max={0.99}
+                step={0.05}
+                value={settings?.ndviMin ?? -1}
+                onChange={(e) => scene.updateSettings({ ndviMin: Number(e.target.value) })}
+              />
+            </label>
+            <label>
+              NDVI max
+              <input
+                type="number"
+                min={-0.99}
+                max={1}
+                step={0.05}
+                value={settings?.ndviMax ?? 1}
+                onChange={(e) => scene.updateSettings({ ndviMax: Number(e.target.value) })}
+              />
+            </label>
           </div>
         )}
       </section>
@@ -886,20 +919,34 @@ function FramePanels({
       <section>
         <h2>Legend</h2>
         <Legend layer={layer} />
-        <button type="button" onClick={() => void copyShareUrl(scene, dates)}>
-          Copy share link
+        <button type="button" className="secondary" onClick={() => void copyShareUrl(scene, dates)}>
+          🔗 Copy share link
         </button>
       </section>
 
       <section>
-        <h2>Area statistics</h2>
-        <p className="small dim">NDVI over the locked view for {current?.datetime.slice(0, 10)}.</p>
+        <h2>Vegetation &amp; Area Statistics</h2>
+        <p className="small dim">
+          Compare NDVI statistics across the current view between {compare.a?.datetime.slice(0, 10)} and {compare.b?.datetime.slice(0, 10)}.
+        </p>
         <label>
           Analysis resolution: {resolutionM} m
-          <input type="range" min={10} max={500} step={10} value={resolutionM} onChange={(e) => setResolutionM(Number(e.target.value))} />
+          <input
+            type="range"
+            min={10}
+            max={500}
+            step={10}
+            value={resolutionM}
+            onChange={(e) => setResolutionM(Number(e.target.value))}
+          />
         </label>
-        <button type="button" disabled={!config || analysis.busy} onClick={() => void runAnalysis()}>
-          {analysis.busy ? 'Analysing…' : 'Analyse this frame'}
+        <button
+          type="button"
+          className="secondary"
+          disabled={!config || analysis.busy}
+          onClick={() => void runAnalysis()}
+        >
+          {analysis.busy ? 'Analysing…' : 'Analyse this view'}
         </button>
         {analysis.error && <p className="error small">{analysis.error}</p>}
         {analysis.value && <AnalysisSummary value={analysis.value} />}
@@ -909,15 +956,22 @@ function FramePanels({
 }
 
 function AnalysisSummary({ value }: { value: RegionStatsResponse }): React.JSX.Element {
-  const metric = (v: number | null): string => v == null ? '—' : v.toFixed(4);
+  const metric = (v: number | null): string => (v == null ? '—' : v.toFixed(4));
   return (
     <div className="analysis-summary small">
       <p>{value.commonValidCount.toLocaleString()} common valid samples · {(value.validCoverageFraction * 100).toFixed(1)}% coverage</p>
-      <p>Mean NDVI A {metric(value.meanNdviA)} · B {metric(value.meanNdviB)} · Δ {metric(value.meanDelta)}</p>
-      {value.fractionBelowThreshold != null && <p>{(value.fractionBelowThreshold * 100).toFixed(1)}% show an NDVI decrease above the threshold.</p>}
-      <p className="dim">Approximate at the explicitly selected analysis resolution.</p>
-      <button type="button" className="secondary" onClick={() => downloadAnalysis(value, 'json')}>Export JSON</button>
-      <button type="button" className="secondary" onClick={() => downloadAnalysis(value, 'csv')}>Export CSV</button>
+      <p>Mean NDVI A: <strong>{metric(value.meanNdviA)}</strong> · B: <strong>{metric(value.meanNdviB)}</strong> · Δ: <strong>{metric(value.meanDelta)}</strong></p>
+      {value.fractionBelowThreshold != null && (
+        <p>{(value.fractionBelowThreshold * 100).toFixed(1)}% show an NDVI decrease above threshold.</p>
+      )}
+      <div className="button-row">
+        <button type="button" className="secondary mini-btn" onClick={() => downloadAnalysis(value, 'json')}>
+          Export JSON
+        </button>
+        <button type="button" className="secondary mini-btn" onClick={() => downloadAnalysis(value, 'csv')}>
+          Export CSV
+        </button>
+      </div>
     </div>
   );
 }
@@ -927,12 +981,21 @@ function downloadAnalysis(value: RegionStatsResponse, format: 'json' | 'csv'): v
     ? JSON.stringify(value, null, 2)
     : [
         'sample_count,common_valid_count,valid_coverage,mean_ndvi_a,mean_ndvi_b,mean_delta,fraction_above_threshold,fraction_below_threshold',
-        [value.sampleCount, value.commonValidCount, value.validCoverageFraction, value.meanNdviA ?? '', value.meanNdviB ?? '', value.meanDelta ?? '', value.fractionAboveThreshold ?? '', value.fractionBelowThreshold ?? ''].join(','),
+        [
+          value.sampleCount,
+          value.commonValidCount,
+          value.validCoverageFraction,
+          value.meanNdviA ?? '',
+          value.meanNdviB ?? '',
+          value.meanDelta ?? '',
+          value.fractionAboveThreshold ?? '',
+          value.fractionBelowThreshold ?? '',
+        ].join(','),
       ].join('\n');
   const url = URL.createObjectURL(new Blob([content], { type: format === 'json' ? 'application/json' : 'text/csv' }));
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `terrascope-analysis.${format}`;
+  anchor.download = `terrascope-comparison-analysis.${format}`;
   anchor.click();
   URL.revokeObjectURL(url);
 }
@@ -957,7 +1020,7 @@ function Legend({ layer }: { layer: RenderLayer }): React.JSX.Element | null {
   if (layer === 'band') {
     return (
       <p className="small dim">
-        One band, stretched to the full range. Lighter means more reflectance.
+        One band stretched to full range. Lighter pixels represent higher reflectance.
       </p>
     );
   }
@@ -992,7 +1055,7 @@ function GpuFooter({ scene }: { scene: MapScene | null }): React.JSX.Element | n
   return (
     <footer className="gpu">
       <span className="dim small">
-        {info.vendor || 'unknown'} · {info.architecture || info.device || 'GPU'}
+        WebGPU: {info.vendor || 'GPU'} · {info.architecture || info.device || 'adapter active'}
       </span>
     </footer>
   );
@@ -1002,15 +1065,16 @@ function PerformancePanel({ scene }: { scene: MapScene | null }): React.JSX.Elem
   const stats = useSceneStats(scene);
   return (
     <details className="performance">
-      <summary>Performance</summary>
+      <summary>Performance &amp; Diagnostics</summary>
       <p className="small dim">Frame {stats.lastFrameMs.toFixed(2)} ms · GPU/CPU estimate {(stats.bytes / 1048576).toFixed(1)} MiB</p>
-      <p className="small dim">{stats.requests} tile responses · {(stats.downloadedBytes / 1048576).toFixed(2)} MiB transferred · {stats.decodeMs.toFixed(1)} ms decode · {stats.cacheHits} edge/R2 hits</p>
-      <p className="small dim">Measurements cover this session. Allocation is an application estimate, not total device memory.</p>
+      <p className="small dim">
+        {stats.requests} tile requests · {(stats.downloadedBytes / 1048576).toFixed(2)} MiB transferred · {stats.decodeMs.toFixed(1)} ms decode · {stats.cacheHits} cache hits
+      </p>
     </details>
   );
 }
 
-// ---- scene snapshots ------------------------------------------------------
+// ---- scene hooks ----------------------------------------------------------
 
 function useSceneStatus(scene: MapScene | null): MapStatus {
   const subscribe = useCallback(
@@ -1036,21 +1100,11 @@ function useSceneStats(scene: MapScene | null): MapStats {
   );
 }
 
-/**
- * The adapter description is only known after `init()` resolves, so the
- * subscription has to be the reason this component re-renders. Reading
- * `scene.gpuInfo` directly would always show the pre-startup value.
- */
 function useGpuInfo(scene: MapScene | null): MapScene['gpuInfo'] {
   useSceneStats(scene);
   return scene?.gpuInfo ?? null;
 }
 
-/**
- * The camera, straight from the scene's view snapshot. Not from render stats:
- * those only update when a GPU frame is drawn, which is late in a background
- * tab and never if WebGPU fails -- and zoom gates the Play button.
- */
 function useCamera(scene: MapScene | null): { zoom: number; center: { lon: number; lat: number } } {
   const subscribe = useCallback(
     (onChange: () => void) => (scene ? scene.subscribe(onChange) : () => {}),
@@ -1062,23 +1116,29 @@ function useCamera(scene: MapScene | null): { zoom: number; center: { lon: numbe
 
 const IDLE_CAMERA = { zoom: 0, center: { lon: 0, lat: 0 } };
 
-function useTimelapse(scene: MapScene | null): TimelapseState {
+function useCompare(scene: MapScene | null): CompareState {
   const subscribe = useCallback(
     (onChange: () => void) => (scene ? scene.subscribe(onChange) : () => {}),
     [scene],
   );
   return useSyncExternalStore(
     subscribe,
-    () => scene?.timelapse ?? IDLE_TIMELAPSE,
-    () => IDLE_TIMELAPSE,
+    () => scene?.compare ?? IDLE_COMPARE,
+    () => IDLE_COMPARE,
   );
 }
 
 function useSceneSettings(scene: MapScene | null): RenderSettings | null {
-  useSceneStats(scene);
-  return scene?.settings ?? null;
+  const subscribe = useCallback(
+    (onChange: () => void) => (scene ? scene.subscribe(onChange) : () => {}),
+    [scene],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => scene?.settings ?? null,
+    () => null,
+  );
 }
-
 
 /** The last 90 days, ending today (UTC), as YYYY-MM-DD. */
 function defaultDates(): { from: string; to: string } {
@@ -1092,7 +1152,7 @@ function readSharedState(): SharedState {
   const fallback: SharedState = {
     dates: { ...defaults },
     view: { lon: -121.3, lat: 38.1, zoom: 11 },
-    settings: {},
+    settings: { layer: 'vegetation' },
   };
   if (typeof location === 'undefined') return fallback;
   const p = new URLSearchParams(location.search);
@@ -1103,7 +1163,7 @@ function readSharedState(): SharedState {
     return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : value;
   };
   const isDate = (value: string | null): value is string => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '');
-  const layers: RenderLayer[] = ['natural', 'false', 'ndvi', 'band', 'vegetation'];
+  const layers: RenderLayer[] = ['vegetation', 'ndvi', 'natural', 'false', 'band', 'difference'];
   const bands: RampBand[] = ['red', 'green', 'blue', 'nir'];
   const layer = p.get('layer') as RenderLayer | null;
   const band = p.get('band') as RampBand | null;
@@ -1118,10 +1178,11 @@ function readSharedState(): SharedState {
       zoom: number('z', 11, MIN_ZOOM, MAX_ZOOM),
     },
     settings: {
-      ...(layer && layers.includes(layer) ? { layer } : {}),
+      layer: layer && layers.includes(layer) ? layer : 'vegetation',
       ...(band && bands.includes(band) ? { band } : {}),
       gamma: number('gamma', 1, 0.4, 2.2),
       exposure: number('exposure', 1, 0.4, 2.5),
+      swipe: number('divider', 0.5, 0, 1),
       qualityMask: p.get('quality') !== 'off',
       ndviMin: number('ndviMin', -1, -1, 0.99),
       ndviMax: number('ndviMax', 1, -0.99, 1),
@@ -1134,15 +1195,24 @@ async function copyShareUrl(scene: MapScene, dates: Dates): Promise<void> {
   const { center, zoom } = scene.camera;
   const settings = scene.settings;
   const entries: Record<string, string> = {
-    lon: center.lon.toFixed(6), lat: center.lat.toFixed(6), z: zoom.toFixed(3),
-    from: dates.from, to: dates.to,
-    layer: settings.layer, band: settings.band, gamma: String(settings.gamma),
+    lon: center.lon.toFixed(6),
+    lat: center.lat.toFixed(6),
+    z: zoom.toFixed(3),
+    from: dates.from,
+    to: dates.to,
+    layer: settings.layer,
+    band: settings.band,
+    gamma: String(settings.gamma),
     exposure: String(settings.exposure),
+    divider: settings.swipe.toFixed(2),
     quality: settings.qualityMask ? 'on' : 'off',
-    ndviMin: String(settings.ndviMin), ndviMax: String(settings.ndviMax),
+    ndviMin: String(settings.ndviMin),
+    ndviMax: String(settings.ndviMax),
   };
   url.search = '';
-  for (const [key, value] of Object.entries(entries)) if (value) url.searchParams.set(key, value);
+  for (const [key, value] of Object.entries(entries)) {
+    if (value) url.searchParams.set(key, value);
+  }
   await navigator.clipboard.writeText(url.toString());
   history.replaceState(null, '', url);
 }
@@ -1166,4 +1236,4 @@ const IDLE_STATS: MapStats = {
   inFlight: IDLE_PROGRESS,
 };
 
-const IDLE_STATUS: MapStatus = { phase: 'starting', message: 'Starting…' };
+const IDLE_STATUS: MapStatus = { phase: 'starting', message: 'Starting WebGPU…' };

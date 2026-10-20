@@ -19,7 +19,9 @@
     "deploy:staging": "npm run build && npm --workspace @terrascope/edge run deploy:staging",
     "deploy": "npm run build && npm --workspace @terrascope/edge run deploy",
     "benchmark": "node scripts/benchmark.mjs",
-    "verify": "bash scripts/verify.sh"
+    "verify": "bash scripts/verify.sh",
+    "prepare:skyfall": "node scripts/prepare-skyfall.mjs",
+    "test:splat": "node scripts/verify-splat-view.mjs"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

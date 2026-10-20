@@ -1,7 +1,7 @@
 /**
- * Timelapse planning: which scenes become frames, in what order they load, and
- * what grid a frame is read on. Pure functions, so the rules are testable
- * without a GPU or a network.
+ * Comparison planning: which two scenes to compare, and what grid both dates
+ * are read on. Pure functions, so the rules are testable without a GPU or a
+ * network.
  */
 
 import type { Scene } from '@terrascope/contracts';
@@ -10,7 +10,7 @@ import type { Scene } from '@terrascope/contracts';
 const PREFERRED_COLLECTION = 'sentinel-2-c1-l2a';
 
 /**
- * Pixel budget for one frame. The server caps a frame at 320k pixels, which a
+ * Pixel budget for one read. The server caps a read at 320k pixels, which a
  * 4-band EOT1 payload (25 bytes a pixel) only just fits under its 8 MiB limit.
  * Staying below that keeps a margin for the header.
  */
@@ -21,7 +21,7 @@ const EARTH_RADIUS = 6378137;
 /** Sentinel-2's finest bands (red, green, blue, NIR) are 10 m. */
 export const NATIVE_GSD_M = 10;
 
-/** A frame's scene, plus same-pass granules that fill the parts of the view it misses. */
+/** A date's scene, plus same-pass granules that fill the parts of the view it misses. */
 export type FrameScene = Scene & {
   mosaicIds?: readonly string[];
   /** Fraction of the view with data on this date (0..1), from footprints. */
@@ -30,46 +30,19 @@ export type FrameScene = Scene & {
 
 type Bounds = { west: number; south: number; east: number; north: number };
 
-/** Extra granules one frame may composite (the server enforces the same cap). */
+/** Extra granules one date's read may composite (the server enforces the same cap). */
 const MAX_MOSAIC_GRANULES = 3;
 
 /**
  * Dates whose footprints cover less of the view than this are skipped. A
  * view on the boundary between two orbit tracks is only half imaged on each
- * track's dates; playing those gives frames that are half empty.
+ * track's dates; comparing those gives an image that is half empty.
  */
 export const MIN_VIEW_COVERAGE = 0.8;
 
 /** Points sampled across the view to measure footprint coverage. */
 const SAMPLES_X = 16;
 const SAMPLES_Y = 10;
-
-/**
- * One scene per acquisition date, oldest first, judged at the view centre.
- * The simple rule, kept for callers without a view; see `selectFramesForView`.
- */
-export function selectFrames(
-  scenes: readonly Scene[],
-  centre: { lon: number; lat: number },
-  maxCloud: number,
-): FrameScene[] {
-  const byDate = new Map<string, Scene>();
-  for (const scene of scenes) {
-    if (!inFootprint(scene, centre)) continue;
-    if (scene.cloudCover != null && scene.cloudCover > maxCloud) continue;
-    const date = scene.datetime.slice(0, 10);
-    const current = byDate.get(date);
-    if (!current || better(scene, current)) byDate.set(date, scene);
-  }
-  return [...byDate.values()].sort((a, b) => a.datetime.localeCompare(b.datetime));
-}
-
-function better(candidate: Scene, current: Scene): boolean {
-  const candidatePreferred = candidate.collection === PREFERRED_COLLECTION;
-  const currentPreferred = current.collection === PREFERRED_COLLECTION;
-  if (candidatePreferred !== currentPreferred) return candidatePreferred;
-  return (candidate.cloudCover ?? 100) < (current.cloudCover ?? 100);
-}
 
 export interface ViewSelection {
   frames: FrameScene[];
@@ -195,94 +168,73 @@ function inPolygon(rings: number[][][], point: { lon: number; lat: number }): bo
   return inside;
 }
 
-/**
- * Thin frames to `maxFrames` without uneven jumps, preferring clear dates.
- *
- * The range is cut into `maxFrames` equal time slots and each slot keeps its
- * least cloudy date (catalog cloud cover; unknown counts as fully cloudy).
- * Taking every n-th date instead keeps the spacing but ignores clouds, and
- * taking the n clearest ignores spacing -- a month of clear weather would
- * crowd out the rest of the timelapse. Slots without a date stay empty.
- */
-export function pickBySlots(frames: readonly FrameScene[], from: string, to: string, maxFrames: number): FrameScene[] {
-  if (frames.length <= maxFrames) return [...frames];
-  const start = Date.parse(`${from}T00:00:00Z`);
-  const span = Math.max(1, Date.parse(`${to}T23:59:59Z`) - start);
-  const best = new Map<number, FrameScene>();
-  for (const frame of frames) {
-    const t = Date.parse(frame.datetime);
-    const slot = Math.min(maxFrames - 1, Math.max(0, Math.floor(((t - start) / span) * maxFrames)));
-    const current = best.get(slot);
-    if (!current || (frame.cloudCover ?? 100) < (current.cloudCover ?? 100)) best.set(slot, frame);
-  }
-  return [...best.values()].sort((a, b) => a.datetime.localeCompare(b.datetime));
+export interface ComparisonPair {
+  /** The earlier date. Always drawn left of the divider. */
+  a: FrameScene;
+  /** The later date. Always drawn right of the divider. */
+  b: FrameScene;
+  /** Whole days between the requested date and the date actually chosen. */
+  fromGapDays: number;
+  toGapDays: number;
 }
 
 /**
- * The order frames are fetched in.
+ * The two dates to compare: the one nearest `from` and the one nearest `to`.
  *
- * The first frame goes first, alone, because it is what the user is waiting
- * for. After that, sequential frames (what playback needs next) alternate with
- * a bisection of the range (what scrubbing needs), so both playing from the
- * start and dragging to the middle find something loaded early.
- */
-export function loadOrder(count: number): number[] {
-  if (count <= 0) return [];
-  const spread: number[] = [];
-  if (count > 1) spread.push(count - 1);
-  const queue: Array<[number, number]> = [[0, count - 1]];
-  while (queue.length > 0) {
-    const [lo, hi] = queue.shift()!;
-    if (hi - lo < 2) continue;
-    const mid = (lo + hi) >> 1;
-    spread.push(mid);
-    queue.push([lo, mid], [mid, hi]);
-  }
-  const seen = new Set<number>([0]);
-  const out = [0];
-  let next = 1;
-  let s = 0;
-  while (out.length < count) {
-    while (next < count && seen.has(next)) next += 1;
-    if (next < count) {
-      seen.add(next);
-      out.push(next);
-    }
-    while (s < spread.length && seen.has(spread[s])) s += 1;
-    if (s < spread.length) {
-      seen.add(spread[s]);
-      out.push(spread[s]);
-    }
-  }
-  return out;
-}
-
-/**
- * Small moving prefetch window around the displayed date.
+ * Dates are rarely available exactly where asked, so the nearest is used rather
+ * than refusing to compare -- the gaps come back with the pair so the caller can
+ * say how far off it had to settle. Two acquisitions of one day are still one
+ * date, so the pair is forced onto two distinct items: a date compared with
+ * itself is a difference of zero, which looks broken rather than empty.
  *
- * Playback direction wins: current, next, next + 1, then previous. At the
- * ends the indices wrap only when looping is enabled. Removed dates are
- * skipped, and every returned index is unique.
+ * Null when the search found fewer than two dates, which the caller has to
+ * report rather than paper over.
  */
-export function timelineWindow(
-  count: number,
-  current: number,
-  direction: 1 | -1,
-  loop: boolean,
-  excluded: readonly boolean[] = [],
-): number[] {
-  if (count <= 0) return [];
-  const out: number[] = [];
-  const add = (raw: number): void => {
-    const index = loop ? ((raw % count) + count) % count : raw;
-    if (index < 0 || index >= count || excluded[index] || out.includes(index)) return;
-    out.push(index);
+export function pickComparisonPair(
+  frames: readonly FrameScene[],
+  from: string,
+  to: string,
+): ComparisonPair | null {
+  if (frames.length < 2) return null;
+  const wanted = [Date.parse(`${from}T00:00:00Z`), Date.parse(`${to}T00:00:00Z`)];
+  const first = nearestTo(frames, wanted[0], null);
+  const second = nearestTo(frames, wanted[1], first?.id ?? null);
+  if (!first || !second) return null;
+  // Older on the left, so dragging the divider right always moves forward in
+  // time rather than jumping back to the earlier date.
+  const [a, b] = Date.parse(first.datetime) <= Date.parse(second.datetime) ? [first, second] : [second, first];
+  return {
+    a,
+    b,
+    fromGapDays: gapDays(a.datetime, wanted[0]),
+    toGapDays: gapDays(b.datetime, wanted[1]),
   };
-  add(current);
-  add(current + direction);
-  add(current + direction * 2);
-  add(current - direction);
-  return out;
+}
+
+/** The frame whose date is closest to `target`, optionally skipping one id. */
+function nearestTo(
+  frames: readonly FrameScene[],
+  target: number,
+  excludeId: string | null,
+): FrameScene | null {
+  let best: FrameScene | null = null;
+  let bestGap = Infinity;
+  for (const frame of frames) {
+    if (excludeId != null && frame.id === excludeId) continue;
+    const gap = Math.abs(Date.parse(frame.datetime) - target);
+    // Ties go to the clearer date: two acquisitions on one day, one of them
+    // under cloud, is a comparison nobody asked for.
+    const clearer = best != null && (frame.cloudCover ?? 100) < (best.cloudCover ?? 100);
+    if (gap < bestGap || (gap === bestGap && clearer)) {
+      best = frame;
+      bestGap = gap;
+    }
+  }
+  return best;
+}
+
+function gapDays(datetime: string, target: number): number {
+  return Math.round(Math.abs(Date.parse(datetime) - target) / 86_400_000);
 }
 
 export interface FramePlan {
@@ -293,12 +245,17 @@ export interface FramePlan {
 }
 
 /**
- * The grid a frame is read on: exactly the view's bounds, sampled at the
+ * The grid both dates are read on: exactly the view's bounds, sampled at the
  * coarsest of three limits --
  *
  *  - the view's own CSS pixels (more would be invisible),
  *  - the sensor's native 10 m (finer adds pixels, not detail), and
  *  - the frame pixel budget (the EOT1 payload cap).
+ *
+ * One plan serves both dates, which is the whole point: the swipe seam and the
+ * difference layer are only exact if A and B are sampled on the same grid. Two
+ * plans would leave a half-pixel offset between them, which reads as a real
+ * edge in the difference.
  *
  * The native limit matters when zoomed in: it spends the budget on the view
  * instead of on resampling the same 10 m samples into more pixels.
