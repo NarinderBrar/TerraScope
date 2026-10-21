@@ -950,12 +950,21 @@ button.scene.selected {
 }
 
 /* Urban Gaussian-splat explorer. */
+.footprints-toggle { left: 112px; display: flex; align-items: center; gap: 7px; }
+.footprints-toggle[aria-pressed="true"] { color: #bbf7d0; border-color: #4ade80; background: #123323ed; }
+.footprints-toggle:disabled { opacity: .5; cursor: default; }
+.splat-footprints { position: absolute; inset: 0; z-index: 2; overflow: hidden; pointer-events: none; }
+.splat-footprint { position: absolute; margin: 0; padding: 0; min-width: 0; min-height: 0; border: 2px solid #4ade80; border-radius: 2px; box-sizing: border-box; background: #22c55e38; color: #e1ffe8; overflow: hidden; pointer-events: none; }
+.splat-footprint[data-hovered="true"], .splat-footprint:focus-visible { border-color: #bbf7d0; background: #22c55e60; outline: 2px solid #e1ffe8; outline-offset: -4px; }
+.splat-footprint span { position: absolute; top: 5px; left: 5px; max-width: calc(100% - 10px); padding: 4px 7px; border-radius: 4px; background: #0c281fe8; font-size: 11px; text-align: left; }
+.map.over-splat { cursor: pointer; }
 .map.marking { cursor: crosshair; }
 .aoi-marquee { position: absolute; pointer-events: none; border: 2px solid #78d9ff; background: #54bfff26; z-index: 5; }
 .urban-tools { position: absolute; top: 58px; left: 16px; right: 16px; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; pointer-events: none; }
 .urban-tools > * { pointer-events: auto; }
 .urban-tools span { font-size: 11px; padding: 5px; background: #101b2be8; border-radius: 5px; }
 .urban-tools [aria-pressed="true"] { outline: 2px solid #78d9ff; }
+.urban-scene-select { max-width: 100%; min-width: 0; padding: 7px 10px; border: 1px solid #52647b; border-radius: 6px; background: #101b2bf2; color: #e4edf7; font: inherit; font-size: 12px; }
 .urban-prompt { position: absolute; left: 16px; bottom: 100px; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; max-width: calc(100% - 32px); padding: 12px; border: 1px solid #78d9ff; border-radius: 10px; background: #101b2bf2; font-size: 13px; }
 .splat-view-direct { position: absolute; inset: 0; display: none; background: transparent; z-index: 25; }
 .splat-view-direct.active { display: block; }
@@ -964,6 +973,7 @@ button.scene.selected {
 .splat-controls-overlay > div { flex: 1; }
 .splat-controls-overlay h3 { margin: 0 0 4px; font-size: 15px; }
 .splat-controls-overlay span, .splat-help, .splat-attribution { font-size: 12px; }
+.splat-detail-status { display: flex; align-items: center; gap: 8px; color: #b8d9c2; }
 .splat-message { position: absolute; top: 45%; left: 50%; transform: translate(-50%, -50%); max-width: 85%; padding: 20px; background: #101b2bf2; border-radius: 10px; text-align: center; }
 .splat-message progress { width: 240px; max-width: 100%; }
 .splat-help { position: absolute; bottom: 35px; left: 16px; background: #101b2be8; padding: 6px; border-radius: 4px; }

@@ -39,7 +39,7 @@ export class Camera {
     this.update(0);
   }
   setDistance(distance: number, _damping = 1): void {
-    this.distanceTween.value.distance = Math.max(0.005 * this.fovFactor, Math.min(10 * this.fovFactor, distance));
+    this.distanceTween.value.distance = Math.max(0.005 * this.fovFactor, Math.min(1000 * this.fovFactor, distance));
     this.dirty = true;
     this.update(0);
   }
@@ -84,6 +84,8 @@ export class Camera {
     const az = -this.azim * Math.PI / 180;
     const el = -this.elevation * Math.PI / 180;
     const distance = this.distance * this.sceneRadius / this.fovFactor;
+    this.camera.farClip = Math.max(1000, this.sceneRadius * 30, distance * 4);
+    this.camera.nearClip = Math.max(0.1, distance / 100000);
     this.mainCamera.setPosition(
       this.focalPoint.x - Math.cos(el) * Math.sin(az) * distance,
       this.focalPoint.y + Math.sin(el) * distance,

@@ -4,12 +4,15 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import catalog from '../apps/web/src/data/skyfallCatalog.json' with { type: 'json' };
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const profile = await mkdtemp(join(tmpdir(), 'terrascope-splat-browser-'));
 const port = Number(process.env.CDP_PORT ?? 9336);
 const base = process.env.SPLAT_TEST_URL ?? 'http://127.0.0.1:5173';
 const screenshotDir = process.env.SPLAT_SCREENSHOTS;
+const sceneIds = (process.env.SPLAT_TEST_SCENES ?? 'JAX_068,NYC_004,JAX_004,NYC_010,JAX_164,JAX_175,JAX_214,JAX_260,JAX_168,JAX_264,NYC_219,NYC_336').split(',');
+for (const id of sceneIds) assert.ok(catalog.some((scene) => scene.id === id), `Unknown scene: ${id}`);
 const flags = [
   '--headless=new', '--no-sandbox', '--disable-gpu-sandbox', '--enable-unsafe-webgpu',
   '--disable-dev-shm-usage', '--no-first-run', '--window-size=1200,900',
@@ -88,10 +91,17 @@ try {
   }
   await send('Page.navigate', { url: `${base}/` });
   await waitFor('document.querySelector("canvas.map")?.width > 300');
-  for (const [index, city] of ['Jacksonville', 'New York City'].entries()) {
-    await click(city);
+  for (const [index, id] of sceneIds.entries()) {
+    const name = catalog.find((scene) => scene.id === id).name;
+    assert.ok(await evaluate(`(() => {
+      const select = document.querySelector('select[aria-label="Choose 3D scene"]');
+      if (!select || ![...select.options].some(option => option.value === ${JSON.stringify(id)})) return false;
+      select.value = ${JSON.stringify(id)};
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`), `Missing map-aligned scene: ${id}`);
     await delay(300);
-    await waitFor(`document.querySelector('.urban-prompt')?.textContent.includes(${JSON.stringify(city)})`);
+    await waitFor(`document.querySelector('.urban-prompt')?.textContent.includes(${JSON.stringify(name)})`);
     const before = await evaluate('document.querySelector(".hud-row").textContent');
     if (process.env.SPLAT_FORCE_WEBGL !== '1') {
       if (index === 0) await click('Mark Area');
@@ -131,7 +141,7 @@ try {
     if (screenshotDir) {
       await mkdir(screenshotDir, { recursive: true });
       const screenshot = await send('Page.captureScreenshot', { format: 'png' });
-      await writeFile(join(screenshotDir, `${index === 0 ? 'JAX_068' : 'NYC_004'}.png`), Buffer.from(screenshot.data, 'base64'));
+      await writeFile(join(screenshotDir, `${id}.png`), Buffer.from(screenshot.data, 'base64'));
       const rect = await evaluate(`(() => { const r = document.querySelector('.splat-canvas').getBoundingClientRect(); return {x:r.x+r.width*.5,y:r.y+r.height*.65}; })()`);
       await send('Input.dispatchMouseEvent', {type:'mouseMoved', x:rect.x, y:rect.y, buttons:0});
       await send('Input.dispatchMouseEvent', {type:'mousePressed', x:rect.x, y:rect.y, button:'left', buttons:1, clickCount:1});
@@ -140,7 +150,7 @@ try {
       await delay(400);
       const orbit = await send('Page.captureScreenshot', {format:'png'});
       assert.notEqual(orbit.data, screenshot.data, 'Orbit must change the camera view');
-      await writeFile(join(screenshotDir, `${index === 0 ? 'JAX_068' : 'NYC_004'}-orbit.png`), Buffer.from(orbit.data, 'base64'));
+      await writeFile(join(screenshotDir, `${id}-orbit.png`), Buffer.from(orbit.data, 'base64'));
       await click('Reset view');
     }
     await click('← Back to Map');
@@ -149,7 +159,7 @@ try {
     // Close during load, then reopen on the next iteration.
     await click('Switch to 3D Urban View');
     await click('← Back to Map');
-    console.log(`${city}: splat + ground map, map toggle, reset, return and cancellation passed`);
+    console.log(`${id}: splat + ground map, map toggle, reset, return and cancellation passed`);
   }
   assert.deepEqual(errors, [], 'Browser runtime errors');
 } finally {

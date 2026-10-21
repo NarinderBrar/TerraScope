@@ -1,16 +1,17 @@
 import {
   Asset, BoundingBox, Entity, RESOLUTION_AUTO, Quat, Vec3, createGraphicsDevice,
-  type GraphicsDevice, type GSplatResourceBase,
+  type GraphicsDevice,
 } from 'playcanvas';
-import { fetchSplatBlob } from './file-handler';
-import { loadGroundMap, type GroundMapLayer, type GroundMapStatus } from './GroundMapLayer';
+import { SplatChunkLoader } from './SplatChunkLoader';
+import type { SplatStreamStatus } from './sogChunk';
+import { loadStreamingIndex, type StreamedSplatResource } from './streamingIndex';
+import { createGroundMap, type GroundMapLayer, type GroundMapStatus } from './GroundMapLayer';
 import { mapViewFrame } from './mapViewFrame';
-import { planGroundMap } from './groundMapPlan';
 import { PCApp } from './supersplat/pc-app';
 import { Camera } from './supersplat/camera';
 import type { GeoBounds, SplatSceneMeta } from '../data/splatScenes';
 
-export interface SplatSession { dispose(): void; reset(): void; setMapVisible(visible: boolean): void; reloadMap(): void }
+export interface SplatSession { dispose(): void; reset(): void; setMapVisible(visible: boolean): void; reloadMap(): void; retryDetail(): void }
 
 export async function createSplatSession(
   canvas: HTMLCanvasElement,
@@ -20,6 +21,7 @@ export async function createSplatSession(
   onError: (message: string) => void,
   onMapStatus: (status: GroundMapStatus) => void,
   entryBounds: GeoBounds,
+  onStreamStatus: (status: SplatStreamStatus) => void = () => {},
 ): Promise<SplatSession> {
   signal.throwIfAborted();
   // SuperSplat's PCApp setup, using the engine's native SOG asset loader. Select
@@ -33,20 +35,18 @@ export async function createSplatSession(
   let asset: Asset | undefined;
   let observer: ResizeObserver | undefined;
   let groundMap: GroundMapLayer | undefined;
-  let mapController: AbortController | undefined;
-  let mapVisible = true;
+  let chunks: SplatChunkLoader | undefined;
   let disposed = false;
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
     signal.removeEventListener('abort', dispose);
     observer?.disconnect();
-    mapController?.abort();
     groundMap?.dispose();
     camera?.destroy();
-    // Destroy placements before releasing their asset and its GPU textures.
+    // Let app.destroy release the renderer's world references before unloading
+    // registered assets (which destroys the chunk loader and its GPU resources).
     app?.root.findByName('Skyfall model')?.destroy();
-    if (app && asset) { app.assets.remove(asset); asset.unload(); }
     if (app) app.destroy(); else device.destroy();
   };
   const fail = (): void => {
@@ -72,70 +72,62 @@ export async function createSplatSession(
     observer.observe(canvas);
     resize();
 
-    const blob = await fetchSplatBlob(meta.splatUrl, signal, onProgress);
+    onProgress('Loading the 3D tile index…');
+    asset = await loadStreamingIndex(app, meta.id, meta.lodUrl, signal);
     signal.throwIfAborted();
-    onProgress('Decoding Gaussian splats…');
-    const contents = await blob.arrayBuffer();
-    signal.throwIfAborted();
-    asset = new Asset(meta.id, 'gsplat', { url: meta.splatUrl, filename: `${meta.id}.sog`, contents });
-    app.assets.add(asset);
-    const modelAsset = asset;
-    await new Promise<void>((resolve, reject) => {
-      const finish = (error?: unknown): void => {
-        signal.removeEventListener('abort', abort);
-        modelAsset.off('load', loaded);
-        modelAsset.off('error', failed);
-        error ? reject(error) : resolve();
-      };
-      const loaded = (): void => finish();
-      const failed = (reason: unknown): void => finish(new Error(String(reason)));
-      const abort = (): void => finish(signal.reason);
-      modelAsset.once('load', loaded);
-      modelAsset.once('error', failed);
-      signal.addEventListener('abort', abort, { once: true });
-      app!.assets.load(modelAsset);
+    const resource = asset.resource as unknown as StreamedSplatResource;
+    if (!resource?.octree || !resource.aabb) throw new Error('The city model did not provide a streaming tile index.');
+    const levels = new Map(resource.octree.files.map((file) => [file.url, file.lodLevel]));
+    chunks = new SplatChunkLoader(device, levels, (state) => {
+      if (disposed) return;
+      if (!state.loaded) onProgress('Loading LOD 3 · coarse city tiles…');
+      onStreamStatus(state);
     });
-    signal.throwIfAborted();
-    const resource = asset.resource as GSplatResourceBase;
-    if (!resource?.aabb) throw new Error('The city model did not provide valid bounds.');
+    resource.octree.assetLoader?.destroy();
+    resource.octree.assetLoader = chunks;
+    app.scene.gsplat.lodUnderfillLimit = 2;
+    app.scene.gsplat.splatBudget = 2_000_000;
+    app.scene.gsplat.cooldownTicks = 60;
     const modelRoot = new Entity('Skyfall model');
     // SuperSplat controls use Y-up. Rotate the complete Z-up data frame once,
     // including the ground map, so the model and imagery stay in one frame.
     modelRoot.setLocalRotation(new Quat().setFromDirections(new Vec3(...meta.upVector), Vec3.UP));
     app.root.addChild(modelRoot);
     const model = new Entity(meta.id);
-    model.addComponent('gsplat', { asset, unified: true });
+    model.addComponent('gsplat', { asset, unified: true, lodRangeMin: 0, lodRangeMax: 2, lodBaseDistance: 300, lodMultiplier: 2 });
     modelRoot.addChild(model);
     const bounds = new BoundingBox();
     bounds.setFromTransformedAabb(resource.aabb, modelRoot.getWorldTransform());
     camera.frame(bounds, mapViewFrame(entryBounds, meta.georeference));
-    const mapPlan = planGroundMap(meta, device.maxTextureSize, entryBounds);
+    groundMap = createGroundMap(app, modelRoot, meta.georeference, camera, onMapStatus);
     const reloadMap = (): void => {
       if (disposed) return;
-      mapController?.abort();
-      groundMap?.dispose();
-      groundMap = undefined;
-      const controller = new AbortController();
-      mapController = controller;
-      onMapStatus('loading');
-      void loadGroundMap(app!, modelRoot, mapPlan, controller.signal).then((layer) => {
-        if (disposed || controller.signal.aborted) { layer.dispose(); return; }
-        groundMap = layer;
-        layer.setVisible(mapVisible);
-        // Reveal after the ground texture has been submitted in a rendered frame.
-        app!.once('frameend', () => {
-          if (!disposed && !controller.signal.aborted) onMapStatus('ready');
-        });
-      }).catch(() => { if (!disposed && !controller.signal.aborted) onMapStatus('unavailable'); });
+      groundMap?.retry();
     };
-    reloadMap();
-    app.on('update', (delta: number) => camera?.update(delta));
+    app.on('update', (delta: number) => { camera?.update(delta); groundMap?.update(); });
     app.start();
+    let firstFrameTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([chunks.firstReady, new Promise<never>((_, reject) => {
+        firstFrameTimeout = setTimeout(() => reject(new Error('Coarse city tiles could not be loaded. Retry the scene.')), 60000);
+      })]);
+    } finally { clearTimeout(firstFrameTimeout); }
+    signal.throwIfAborted();
+    // The map and coarse chunks render before refinement continues in the background.
+    await new Promise<void>((resolve, reject) => {
+      const clean = () => { app!.off('frameend', done); signal.removeEventListener('abort', abort); };
+      const done = () => { clean(); resolve(); };
+      const abort = () => { clean(); reject(signal.reason); };
+      app!.once('frameend', done);
+      signal.addEventListener('abort', abort, { once: true });
+    });
+    signal.throwIfAborted();
     return {
       dispose,
       reset: () => { if (!disposed) camera?.reset(); },
       reloadMap,
-      setMapVisible: (visible) => { mapVisible = visible; groundMap?.setVisible(visible); },
+      retryDetail: () => chunks?.retry(),
+      setMapVisible: (visible) => { groundMap?.setVisible(visible); },
     };
   } catch (error) { dispose(); throw error; }
 }

@@ -1,0 +1,413 @@
+{
+  "scene": "JAX_164",
+  "reference": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer",
+  "tileOrigin": {
+    "z": 18,
+    "x0": 71601,
+    "y0": 107870
+  },
+  "modelRaster": {
+    "left": -600,
+    "top": 600,
+    "unitsPerPixel": 1
+  },
+  "modelRasterToReferencePixels": [
+    [
+      1.9399961726552075,
+      0.004436594306127972,
+      204.95826226914926
+    ],
+    [
+      -0.004436594306127972,
+      1.9399961726552075,
+      347.04332244147787
+    ]
+  ],
+  "matchedFeatures": [
+    {
+      "model": [
+        279.0657958984375,
+        890.04736328125
+      ],
+      "satellite": [
+        750.5477313601508,
+        2075.30103833024
+      ]
+    },
+    {
+      "model": [
+        297.0508117675781,
+        331.2352294921875
+      ],
+      "satellite": [
+        783.45660220999,
+        983.9504962943597
+      ]
+    },
+    {
+      "model": [
+        303.92193603515625,
+        670.7240600585938
+      ],
+      "satellite": [
+        799.7209602208382,
+        1648.1257290880908
+      ]
+    },
+    {
+      "model": [
+        318.12066650390625,
+        830.1648559570312
+      ],
+      "satellite": [
+        825.898916258204,
+        1954.8674823681151
+      ]
+    },
+    {
+      "model": [
+        331.248779296875,
+        817.0684204101562
+      ],
+      "satellite": [
+        851.011545245261,
+        1928.9452281182676
+      ]
+    },
+    {
+      "model": [
+        333.61962890625,
+        802.2750244140625
+      ],
+      "satellite": [
+        854.8523932040055,
+        1905.2158266669524
+      ]
+    },
+    {
+      "model": [
+        356.60308837890625,
+        672.7181396484375
+      ],
+      "satellite": [
+        901.0660458750328,
+        1650.3864003583826
+      ]
+    },
+    {
+      "model": [
+        387.24896240234375,
+        448.1726379394531
+      ],
+      "satellite": [
+        957.875235620834,
+        1215.5735184017058
+      ]
+    },
+    {
+      "model": [
+        449.10760498046875,
+        687.7789916992188
+      ],
+      "satellite": [
+        1080.7767599097479,
+        1680.1605649064334
+      ]
+    },
+    {
+      "model": [
+        454.9277038574219,
+        907.7640991210938
+      ],
+      "satellite": [
+        1090.883898431008,
+        2107.785063711271
+      ]
+    },
+    {
+      "model": [
+        455.43011474609375,
+        880.7313842773438
+      ],
+      "satellite": [
+        1090.126639546006,
+        2051.7237222938033
+      ]
+    },
+    {
+      "model": [
+        490.3880615234375,
+        588.4757080078125
+      ],
+      "satellite": [
+        1157.6906889761528,
+        1484.6745692542245
+      ]
+    },
+    {
+      "model": [
+        506.0169372558594,
+        700.3516845703125
+      ],
+      "satellite": [
+        1187.735816400419,
+        1701.3811417839845
+      ]
+    },
+    {
+      "model": [
+        541.794921875,
+        537.2670288085938
+      ],
+      "satellite": [
+        1260.702681881162,
+        1389.7806450149756
+      ]
+    },
+    {
+      "model": [
+        559.4022827148438,
+        541.9423828125
+      ],
+      "satellite": [
+        1292.9880892643357,
+        1398.8199054260776
+      ]
+    },
+    {
+      "model": [
+        587.6539916992188,
+        679.8439331054688
+      ],
+      "satellite": [
+        1347.6754694265792,
+        1665.801581190993
+      ]
+    },
+    {
+      "model": [
+        609.8165283203125,
+        713.4992065429688
+      ],
+      "satellite": [
+        1389.365383340831,
+        1726.093544606292
+      ]
+    },
+    {
+      "model": [
+        816.1226806640625,
+        842.6945190429688
+      ],
+      "satellite": [
+        1794.4950289641263,
+        1975.473662298638
+      ]
+    },
+    {
+      "model": [
+        833.9589233398438,
+        775.8050537109375
+      ],
+      "satellite": [
+        1823.4499006583694,
+        1850.0398928763368
+      ]
+    },
+    {
+      "model": [
+        868.7517700195312,
+        508.19403076171875
+      ],
+      "satellite": [
+        1891.4001552050613,
+        1328.8012679615406
+      ]
+    },
+    {
+      "model": [
+        893.978271484375,
+        929.0512084960938
+      ],
+      "satellite": [
+        1943.4785707206795,
+        2142.4242810042515
+      ]
+    },
+    {
+      "model": [
+        911.7614135742188,
+        386.5312194824219
+      ],
+      "satellite": [
+        1976.7991805555464,
+        1094.6137815708596
+      ]
+    },
+    {
+      "model": [
+        917.8681030273438,
+        410.0585021972656
+      ],
+      "satellite": [
+        1987.2212192397433,
+        1137.1932954109545
+      ]
+    },
+    {
+      "model": [
+        932.14208984375,
+        952.4451293945312
+      ],
+      "satellite": [
+        2018.7953082390775,
+        2191.6230817647174
+      ]
+    }
+  ],
+  "method": "Decoded-SOG top-down point projection matched to cached Esri aerial imagery; author location and coarse SIFT used only for initialization; spatially constrained SIFT/RANSAC similarity; spatially deduplicated features; least-squares refit with every fifth feature withheld from the final fit. Road, bridge, park and building outlines inspected across the projected footprint.",
+  "sourceAssetSha256": "6e56260e3ee4c5d5190f07c990d2af30a05ae6e1f98eb103f271c6af32b2037f",
+  "validationFeatures": [
+    {
+      "model": [
+        275.76666259765625,
+        819.6695556640625
+      ],
+      "satellite": [
+        743.4381642099086,
+        1939.2879986615071
+      ]
+    },
+    {
+      "model": [
+        318.3808898925781,
+        865.8255004882812
+      ],
+      "satellite": [
+        824.1257459493065,
+        2025.5308902751403
+      ]
+    },
+    {
+      "model": [
+        393.5413818359375,
+        894.82666015625
+      ],
+      "satellite": [
+        971.7930748189715,
+        2084.3240750435257
+      ]
+    },
+    {
+      "model": [
+        499.7165832519531,
+        577.5465087890625
+      ],
+      "satellite": [
+        1173.8924413846062,
+        1464.3494126706669
+      ]
+    },
+    {
+      "model": [
+        590.9260864257812,
+        500.4212646484375
+      ],
+      "satellite": [
+        1351.6966892336536,
+        1312.5202504572417
+      ]
+    },
+    {
+      "model": [
+        882.1242065429688,
+        678.3115234375
+      ],
+      "satellite": [
+        1922.535999899748,
+        1662.0698584417069
+      ]
+    },
+    {
+      "model": [
+        995.09423828125,
+        822.3387451171875
+      ],
+      "satellite": [
+        2137.623313988543,
+        1940.6908546327447
+      ]
+    }
+  ],
+  "georeference": {
+    "origin": {
+      "lon": -81.66363205832123,
+      "lat": 30.33034057541861
+    },
+    "modelToMercator": [
+      1.158496424393592,
+      -0.002649375659901217,
+      0.002649375659901217,
+      1.158496424393592
+    ],
+    "groundZ": 20
+  },
+  "coverageModelBounds": [
+    -385,
+    -390,
+    375,
+    395
+  ],
+  "fitResidualMetres": {
+    "count": 24,
+    "median": 1.2877709553983823,
+    "max": 2.2854805974523447
+  },
+  "validationResidualMetres": {
+    "count": 7,
+    "median": 1.654309369107715,
+    "max": 2.286450911452101
+  },
+  "groundMetresPerModelUnit": 0.9999336184024153,
+  "rotationDegrees": 0.13102999355838593,
+  "groundHeightMethod": "Plane below locally sampled reconstructed street surfaces; excludes subsurface floaters. Local Z, not surveyed elevation.",
+  "groundSamples": [
+    {
+      "modelXY": [
+        -130,
+        200
+      ],
+      "medianZ": 28.360761642456055,
+      "count": 62,
+      "radius": 5,
+      "heightFilter": "positive local Z and opacity logit > 1"
+    },
+    {
+      "modelXY": [
+        -160,
+        -100
+      ],
+      "medianZ": 24.852924346923828,
+      "count": 76,
+      "radius": 5,
+      "heightFilter": "positive local Z and opacity logit > 1"
+    },
+    {
+      "modelXY": [
+        200,
+        -200
+      ],
+      "medianZ": 48.918954849243164,
+      "count": 216,
+      "radius": 5,
+      "heightFilter": "positive local Z and opacity logit > 1"
+    }
+  ],
+  "coverageMethod": "Conservative dense rectangular interior measured from decoded model point projection; excludes sparse boundary floaters. Local coordinates in coverageModelBounds.",
+  "referenceSearchHint": {
+    "id": "JAX_164",
+    "lon": -81.66362752,
+    "lat": 30.33032475,
+    "source": "https://superspl.at/scene/5ff93d97"
+  }
+}

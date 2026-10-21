@@ -1,10 +1,57 @@
 import { describe, expect, it } from 'vitest';
-import { lonLatToWorldPx } from '@terrascope/contracts';
+import { lonLatToWorldPx, worldPxToLonLat } from '@terrascope/contracts';
+import { readFileSync } from 'node:fs';
+import manifest from '../public/splats/manifest.json';
 import { SKYFALL_SCENES } from '../src/data/splatScenes';
 import { geographicToModel, modelToGeographic } from '../src/data/splatGeoreference';
 import { planGroundMap } from '../src/splat/groundMapPlan';
 
 describe('satellite ground registration', () => {
+  it('uses level-20 ground imagery for small footprints when it fits the texture budget', () => {
+    const scene = SKYFALL_SCENES[0];
+    const detail = { ...scene, bounds: {
+      west: scene.center.lon - .0001, east: scene.center.lon + .0001,
+      south: scene.center.lat - .0001, north: scene.center.lat + .0001,
+    } };
+    const plan = planGroundMap(detail, 1024);
+    expect(plan.tiles[0].z).toBe(20);
+    expect(plan.width).toBeLessThanOrEqual(1024);
+    expect(plan.height).toBeLessThanOrEqual(1024);
+    const first = plan.tiles[0];
+    const expected = worldPxToLonLat(first.x * 256, first.y * 256, first.z);
+    const actual = modelToGeographic(scene.georeference, plan.corners[0][0], plan.corners[0][1]);
+    expect(actual.lon).toBeCloseTo(expected.lon, 9);
+    expect(actual.lat).toBeCloseTo(expected.lat, 9);
+  });
+  it.each(SKYFALL_SCENES)('requires measured map-registration evidence for $id', (scene) => {
+    const evidence = JSON.parse(readFileSync(new URL(`../../../docs/splat-registration/${scene.id}.json`, import.meta.url), 'utf8')) as {
+      scene: string;
+      tileOrigin: { z: number; x0: number; y0: number };
+      modelRaster: { left: number; top: number; unitsPerPixel: number };
+      matchedFeatures: { model: [number, number]; satellite: [number, number] }[];
+      validationFeatures?: { model: [number, number]; satellite: [number, number] }[];
+      sourceAssetSha256?: string;
+      georeference?: typeof scene.georeference;
+      groundSamples?: { modelXY: [number, number]; medianZ: number }[];
+    };
+    expect(evidence.scene).toBe(scene.id);
+    expect(evidence.matchedFeatures.length).toBeGreaterThanOrEqual(6);
+    if (evidence.validationFeatures) {
+      expect(evidence.validationFeatures.length).toBeGreaterThanOrEqual(3);
+      expect(evidence.sourceAssetSha256).toBe(manifest.assets.find((asset) => asset.id === scene.id)?.sha256);
+      expect(evidence.georeference).toEqual(scene.georeference);
+      for (const sample of evidence.groundSamples!) expect(scene.georeference.groundZ).toBeLessThan(sample.medianZ);
+    }
+    // Includes withheld reference points that did not participate in the fitted transform.
+    for (const feature of [...evidence.matchedFeatures, ...(evidence.validationFeatures ?? [])]) {
+      const geo = worldPxToLonLat(evidence.tileOrigin.x0 * 256 + feature.satellite[0],
+        evidence.tileOrigin.y0 * 256 + feature.satellite[1], evidence.tileOrigin.z);
+      const actual = geographicToModel(scene.georeference, geo.lon, geo.lat);
+      const x = evidence.modelRaster.left + feature.model[0] * evidence.modelRaster.unitsPerPixel;
+      const y = evidence.modelRaster.top - feature.model[1] * evidence.modelRaster.unitsPerPixel;
+      expect(Math.hypot(actual[0] - x, actual[1] - y)).toBeLessThan(6);
+    }
+  });
   it.each(SKYFALL_SCENES)('covers $id with bounded imagery and fixed ground height', (scene) => {
     const plan = planGroundMap(scene);
     expect(plan.width).toBeLessThanOrEqual(4096);

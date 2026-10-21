@@ -20,6 +20,106 @@
       "sha256": "105ae47493db472d049c3b45f16b183151799a55415fe2827c648db75251ce17",
       "splats": 2344147,
       "sogVersion": 2
+    },
+    {
+      "id": "JAX_004",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/JAX_004_final.ply",
+      "sourceSha256": "2f7ef59ef98da8e30cf5c825548478b723b36231c2327993bbf2d1dd35b8ffc1",
+      "file": "JAX_004.sog",
+      "bytes": 23078000,
+      "sha256": "5cff57f7bc5bcea0ec068a7d79b388957ee1478e11422255a299f73b189883a0",
+      "splats": 1524134,
+      "sogVersion": 2
+    },
+    {
+      "id": "NYC_010",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/NYC_010_final.ply",
+      "sourceSha256": "961faf9c243cfe48a20810ae5e7943494b2c0fb126f9ea2ea00ef2ac33c236d2",
+      "file": "NYC_010.sog",
+      "bytes": 42923337,
+      "sha256": "a4febf9866e1edddcfd24c1cde9c6ca529436a5259980640cd78b5d52c0c95a4",
+      "splats": 3083544,
+      "sogVersion": 2
+    },
+    {
+      "id": "JAX_164",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/JAX_164_final.ply",
+      "sourceSha256": "24f841228be79cbb4d24562e9a5e3bedc6360898fabb38332e556c7beac83c38",
+      "file": "JAX_164.sog",
+      "bytes": 38369234,
+      "sha256": "6e56260e3ee4c5d5190f07c990d2af30a05ae6e1f98eb103f271c6af32b2037f",
+      "splats": 2792816,
+      "sogVersion": 2
+    },
+    {
+      "id": "JAX_175",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/JAX_175_final.ply",
+      "sourceSha256": "99293eab9918bd792514eba9aef4c018111bb9fc09cc6daf90805f2dc0677e3f",
+      "file": "JAX_175.sog",
+      "bytes": 31538997,
+      "sha256": "46b6a4bb31841c166161c4c6bf266e9fcf7d79e36593d8d5a3ee8350a3136ed2",
+      "splats": 2236547,
+      "sogVersion": 2
+    },
+    {
+      "id": "JAX_214",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/JAX_214_final.ply",
+      "sourceSha256": "09fd66da67afb4286eecdd2573121ffd6e62e141975fc071e0042e9bbddbaeff",
+      "file": "JAX_214.sog",
+      "bytes": 30450284,
+      "sha256": "a0235d384ae9c1e2d268e130fb1334d0f928306063838fbd4c7d8033605564f4",
+      "splats": 2135548,
+      "sogVersion": 2
+    },
+    {
+      "id": "JAX_260",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/JAX_260_final.ply",
+      "sourceSha256": "013ba647e99f752e7e3e3cdfa62f9e1711f814eedb4da632def86cce242409a2",
+      "file": "JAX_260.sog",
+      "bytes": 31521670,
+      "sha256": "d9c11db30dadea0fab2d90c90d4985392921e891df553f31dfbdcb55f4a767ea",
+      "splats": 2183823,
+      "sogVersion": 2
+    },
+    {
+      "id": "JAX_168",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/JAX_168_final.ply",
+      "sourceSha256": "d33de2d178b9864dce44ce397e6ccda50235c1b4e5ff5a55e51e5a4b8b82ba81",
+      "file": "JAX_168.sog",
+      "bytes": 35918373,
+      "sha256": "e1266d39ce7b0f706fa5d0794e8d4bb107ffee76015523f2a483d0f63e617f69",
+      "splats": 2548531,
+      "sogVersion": 2
+    },
+    {
+      "id": "JAX_264",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/JAX_264_final.ply",
+      "sourceSha256": "ae3503b936aac5cdbb8363154d7762e2f221d7eb8486bbb8ee620cc9df03f359",
+      "file": "JAX_264.sog",
+      "bytes": 35875351,
+      "sha256": "7ffe1ade6d4c1713f42714938d71d400eeb9e82c98d9113827ed4dbcce86ef8b",
+      "splats": 2624195,
+      "sogVersion": 2
+    },
+    {
+      "id": "NYC_219",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/NYC_219_final.ply",
+      "sourceSha256": "420750d708c6d1651dae199f776e9d61be75c0acc77c188a24a4116afaba1c0d",
+      "file": "NYC_219.sog",
+      "bytes": 43039032,
+      "sha256": "03a160bba8c39cf6c51b36a7dc3fc9b7e930635a741ddfe55e0c8556f0a49e6b",
+      "splats": 3117175,
+      "sogVersion": 2
+    },
+    {
+      "id": "NYC_336",
+      "source": "https://huggingface.co/jayinnn/Skyfall-GS-ply/resolve/main/NYC_336_final.ply",
+      "sourceSha256": "6de1308155f52e7faf77ca62cb5b982e6a22cfffa560c09ed225eeb6f5a899ab",
+      "file": "NYC_336.sog",
+      "bytes": 27556953,
+      "sha256": "b01a5df4262b70a64e2f32046544c2f681ca3497804009129e1e54790e0647d0",
+      "splats": 2052721,
+      "sogVersion": 2
     }
   ]
 }

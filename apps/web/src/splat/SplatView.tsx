@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { GeoBounds, SplatSceneMeta } from '../data/splatScenes';
 import type { SplatSession } from './session';
 import type { GroundMapStatus } from './GroundMapLayer';
+import { WORLD_IMAGERY_ATTRIBUTION } from '../map/worldImagery';
+import type { SplatStreamStatus } from './sogChunk';
 
 export interface SplatViewProps {
   active: boolean;
@@ -21,6 +23,7 @@ export function SplatView({ active, sceneMeta, entryBounds, onClose }: SplatView
   const [mapVisible, setMapVisible] = useState(true);
   const mapVisibleRef = useRef(true);
   const [mapStatus, setMapStatus] = useState<GroundMapStatus>('loading');
+  const [streamStatus, setStreamStatus] = useState<SplatStreamStatus | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -32,6 +35,7 @@ export function SplatView({ active, sceneMeta, entryBounds, onClose }: SplatView
     setProgress(undefined);
     setStatus('Starting 3D viewer…');
     setMapStatus('loading');
+    setStreamStatus(null);
     void import('./session').then(async ({ createSplatSession }) => {
       session = await createSplatSession(canvas, sceneMeta, controller.signal, (message, fraction) => {
         if (controller.signal.aborted) return;
@@ -43,7 +47,7 @@ export function SplatView({ active, sceneMeta, entryBounds, onClose }: SplatView
         setLoading(false);
       }, (next) => {
         if (!controller.signal.aborted) setMapStatus(next);
-      }, entryBounds);
+      }, entryBounds, (next) => { if (!controller.signal.aborted) setStreamStatus(next); });
       if (controller.signal.aborted) { session.dispose(); return; }
       sessionRef.current = session;
       session.setMapVisible(mapVisibleRef.current);
@@ -70,7 +74,7 @@ export function SplatView({ active, sceneMeta, entryBounds, onClose }: SplatView
   const ready = !loading && mapStatus !== 'loading' && !error;
 
   return (
-    <div className={`splat-view-direct${active ? ' active' : ''}`} aria-hidden={!active} data-splat-engine="supersplat" data-ready={ready}>
+    <div className={`splat-view-direct${active ? ' active' : ''}`} aria-hidden={!active} data-splat-engine="supersplat" data-ready={ready} data-splat-lod={streamStatus?.bestLod ?? undefined}>
       <canvas ref={canvasRef} className={`splat-canvas${ready ? ' ready' : ''}`} aria-label={`Interactive 3D Gaussian splat of ${sceneMeta.name}`} tabIndex={0} />
       <div className="splat-controls-overlay">
         <div><h3>{sceneMeta.name}</h3><span>Skyfall-GS · SuperSplat 3D</span></div>
@@ -81,6 +85,10 @@ export function SplatView({ active, sceneMeta, entryBounds, onClose }: SplatView
           sessionRef.current?.setMapVisible(visible);
         }} />Satellite map</label>
         <button type="button" className="secondary" disabled={loading || !!error} onClick={() => sessionRef.current?.reset()}>Reset view</button>
+        {!loading && streamStatus && <span className="splat-detail-status" role="status">
+          LOD {streamStatus.bestLod ?? 3} · {streamStatus.failed ? 'Some detail unavailable' : streamStatus.pending ? 'Refining…' : 'Ready'}
+          {streamStatus.failed > 0 && <button type="button" className="secondary" onClick={() => sessionRef.current?.retryDetail()}>Retry detail</button>}
+        </span>}
         <button type="button" className="primary" autoFocus onClick={onClose}>← Back to Map</button>
       </div>
       {loading && <div className="splat-message" role="status"><p>{status}</p><progress max={1} value={progress} /></div>}
@@ -90,7 +98,7 @@ export function SplatView({ active, sceneMeta, entryBounds, onClose }: SplatView
       </div>}
       <div className="splat-help">Drag to orbit · right-drag to pan · scroll to zoom · Esc to return</div>
       <a className="splat-attribution" href="https://huggingface.co/jayinnn/Skyfall-GS-ply" target="_blank" rel="noreferrer">Skyfall-GS models · Apache-2.0</a>
-      {mapVisible && mapStatus === 'ready' && <span className="splat-map-attribution">Imagery © Esri, Vantor, Earthstar Geographics, and the GIS User Community</span>}
+      {mapVisible && mapStatus === 'ready' && <span className="splat-map-attribution">{WORLD_IMAGERY_ATTRIBUTION}</span>}
     </div>
   );
 }

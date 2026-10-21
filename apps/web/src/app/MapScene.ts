@@ -9,6 +9,7 @@
 
 import {
   MAX_ZOOM,
+  MAX_ANALYSIS_TILE_ZOOM,
   createCamera,
   panBy,
   screenToLonLat,
@@ -410,7 +411,7 @@ export class MapScene {
     });
     const activeScene = this.#scene;
     if (!activeScene) return empty('outside');
-    const z = tileZoom(this.#camera);
+    const z = tileZoom(this.#camera, MAX_ANALYSIS_TILE_ZOOM);
     const world = lonLatToWorldPx(point, z);
     const x = Math.floor(world.px / TILE_SIZE);
     const y = Math.floor(world.py / TILE_SIZE);
@@ -473,7 +474,7 @@ export class MapScene {
     this.#dirty = false;
 
     if (scene) {
-      const visible = visibleTiles(this.#camera, this.#viewport);
+      const visible = visibleTiles(this.#camera, this.#viewport, MAX_ANALYSIS_TILE_ZOOM);
       const wanted = new Set<string>();
       // Coarse preview first. One or two overview-level tiles cover the whole
       // view, so something is on screen long before the ~20 detail tiles are.
@@ -564,7 +565,7 @@ export class MapScene {
     if (renderer.ready) {
       const isCompare = this.#compare != null;
       const tiles: DrawTile[] = scene
-        ? visibleTiles(this.#camera, this.#viewport).map((item) => {
+        ? visibleTiles(this.#camera, this.#viewport, MAX_ANALYSIS_TILE_ZOOM).map((item) => {
             const exact = tileKey(scene, item.tile.z, item.tile.x, item.tile.y);
             // In compare mode: if exact tile is not loaded, do not stretch coarse ancestors;
             // leave it unrendered so the explorer basemap shows through until exact tiles arrive!

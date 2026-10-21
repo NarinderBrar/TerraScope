@@ -1,0 +1,18 @@
+{
+  "id": "JAX_164",
+  "converter": "@playcanvas/splat-transform@2.3.1",
+  "sourceSha256": "6e56260e3ee4c5d5190f07c990d2af30a05ae6e1f98eb103f271c6af32b2037f",
+  "levels": {
+    "1": "full source detail (engine 0)",
+    "2": "25% merged (engine 1)",
+    "3": "6.25% merged (engine 2)"
+  },
+  "counts": [
+    2792816,
+    698204,
+    174551
+  ],
+  "leaves": 122,
+  "chunks": 48,
+  "maxChunkSplats": 107915
+}

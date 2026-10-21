@@ -2,8 +2,17 @@
 
 TerraScope is a WebGPU Earth-observation explorer for live Sentinel-2 Level-2A imagery. It searches Earth Search, reads selective COG windows in a GDAL service, sends calibrated numeric EOT1 tiles, and performs interactive NDVI and two-date visualization in the browser.
 
+The urban viewer includes all **12 map-aligned Skyfall Gaussian splat scenes**:
+eight Jacksonville locations and four New York City locations. Every scene has
+measured registration and a clickable green footprint; there is no standalone
+preview mode. See the [scene catalog and registration evidence](docs/SKYFALL_EXPANSION.md).
+
 ## What works
 
+- Explorer and 3D ground maps share Esri World Imagery. Explorer zoom reaches level 20, with lower-resolution imagery retained where detail is unavailable; Sentinel-2 analysis tiles keep their existing level-14 grid.
+- **3D Footprints** highlights registered splat coverage with transparent green boxes. Click a green area to open its map-aligned scene; dragging and scrolling still pan and zoom. Coverage stays enabled when returning from 3D, and registered scenes appear automatically. Overlapping coverage opens the scene whose centre is nearest the click.
+- The 3D satellite ground streams with the camera beyond the city model, refining imagery as you approach and retaining a coarse overview while tiles load. Pan, orbit and regional zoom-out share the same registered frame.
+- Gaussian splats stream spatially from LOD 3 (coarse) toward LOD 1 (full detail), with chunk decoding and position preparation in a Web Worker. Coarse tiles stay visible during refinement; detail retries keep the scene open. See [preparation and validation](docs/SPLAT_STREAMING.md).
 - Worldwide bbox/date/cloud scene discovery with validated pagination.
 - Native WebGPU map with cursor-centred zoom, pan, cancellation, bounded residency, and coarse-parent fallback.
 - Natural colour, false colour, individual bands, NDVI, date swipe, and masked NDVI difference.

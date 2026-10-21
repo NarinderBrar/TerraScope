@@ -23,11 +23,13 @@ import { selectFramesForView, pickComparisonPair } from './app/comparePlan';
 import { MISSION_START, searchView } from './app/sceneSearch';
 import { RasterClient, RasterError } from './data/RasterClient';
 import { Basemap, BASEMAP_ATTRIBUTION } from './map/Basemap';
+import { SplatFootprints } from './map/SplatFootprints';
+import { hitSplatFootprint } from './map/splatFootprints';
 import { MAX_ZOOM, MIN_ZOOM } from './map/MapCamera';
 import { PlaceSearch, zoomForKind, type Place } from './ui/PlaceSearch';
 import { GlobeView } from './globe/GlobeView';
 import { SplatView } from './splat/SplatView';
-import { SKYFALL_SCENES, findIntersectingScene, selectionBounds, type GeoBounds, type ScreenPoint, type SplatSceneMeta } from './data/splatScenes';
+import { SKYFALL_SCENES, findIntersectingScenes, selectionBounds, type GeoBounds, type ScreenPoint, type SplatSceneMeta } from './data/splatScenes';
 import {
   BAND_LABELS,
   deltaLegend,
@@ -90,7 +92,7 @@ export function App(): React.JSX.Element {
   );
 }
 
-function CanvasAndScene({
+export function CanvasAndScene({
   canvasRef,
   scene,
 }: {
@@ -108,6 +110,10 @@ function CanvasAndScene({
   const [globeMode, setGlobeMode] = useState(false);
   const lastInspect = useRef(0);
   const [splatScene, setSplatScene] = useState<SplatSceneMeta | null>(null);
+  const [preferredSplatId, setPreferredSplatId] = useState('');
+  const [showFootprints, setShowFootprints] = useState(false);
+  const [hoveredSplat, setHoveredSplat] = useState<SplatSceneMeta | null>(null);
+  const footprintPress = useRef<{ pointerId: number; x: number; y: number; scene: SplatSceneMeta } | null>(null);
   const [splatEntryBounds, setSplatEntryBounds] = useState<GeoBounds | null>(null);
   const [markMode, setMarkMode] = useState(false);
   const [markedBounds, setMarkedBounds] = useState<GeoBounds | null>(null);
@@ -128,6 +134,8 @@ function CanvasAndScene({
 
   useEffect(() => {
     drag.current = null;
+    footprintPress.current = null;
+    setHoveredSplat(null);
     marquee.current = null;
     selectionCamera.current = null;
     setMarkedBounds(null);
@@ -138,6 +146,8 @@ function CanvasAndScene({
   useEffect(() => {
     const cancelSelection = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape' || splatScene) return;
+      footprintPress.current = null;
+      setHoveredSplat(null);
       marquee.current = null;
       drag.current = null;
       setAoiSelection(null);
@@ -153,10 +163,27 @@ function CanvasAndScene({
     return { x: Math.max(0, Math.min(rect.width, event.clientX - rect.left)), y: Math.max(0, Math.min(rect.height, event.clientY - rect.top)) };
   };
 
+  const openSplatScene = (target: SplatSceneMeta): void => {
+    if (!scene) return;
+    // Use the live map viewport, preserving the geographic entry frame.
+    setSplatEntryBounds(scene.viewBounds());
+    setSplatScene(target);
+    setHoveredSplat(null);
+    footprintPress.current = null;
+  };
+
+  const footprintAt = (event: React.PointerEvent<HTMLCanvasElement>): SplatSceneMeta | undefined => {
+    if (!showFootprints || !scene || compare.active || globeMode || splatScene || markMode || event.shiftKey) return undefined;
+    const rect = event.currentTarget.getBoundingClientRect();
+    return hitSplatFootprint(scene.camera, { width: rect.width, height: rect.height, dpr: 1 }, localPoint(event));
+  };
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !scene) return;
     const observer = new ResizeObserver(() => {
+      footprintPress.current = null;
+      setHoveredSplat(null);
       scene.resize();
       setMarkedBounds(null);
       setAoiSelection(null);
@@ -172,6 +199,10 @@ function CanvasAndScene({
 
   const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>): void => {
     if (event.button !== 0 || !event.isPrimary) return;
+    footprintPress.current = null;
+    const target = footprintAt(event);
+    if (target) footprintPress.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, scene: target };
+    setHoveredSplat(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     if (!compare.active && (event.shiftKey || markMode)) {
       const start = localPoint(event);
@@ -186,6 +217,8 @@ function CanvasAndScene({
 
   const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>): void => {
     if (!event.isPrimary) return;
+    const press = footprintPress.current;
+    if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 5) footprintPress.current = null;
     const start = drag.current;
     if (!scene) return;
     if (marquee.current) {
@@ -199,6 +232,7 @@ function CanvasAndScene({
       drag.current = { x: event.clientX, y: event.clientY };
       return;
     }
+    setHoveredSplat(footprintAt(event) ?? null);
     if (!compare.active) return;
     const now = performance.now();
     if (now - lastInspect.current < 80) return;
@@ -211,6 +245,10 @@ function CanvasAndScene({
     if (!event.isPrimary) return;
     const selection = marquee.current;
     if (selection && selection.pointerId !== event.pointerId) return;
+    const press = footprintPress.current;
+    const openFootprint = event.type === 'pointerup' && !selection && press?.pointerId === event.pointerId
+      && Math.hypot(event.clientX - press.x, event.clientY - press.y) <= 5 && footprintAt(event)?.id === press.scene.id;
+    footprintPress.current = null;
     if (selection && scene && event.type === 'pointerup') {
       const end = localPoint(event);
       if (Math.abs(end.x - selection.start.x) >= 4 && Math.abs(end.y - selection.start.y) >= 4) {
@@ -223,16 +261,20 @@ function CanvasAndScene({
     marquee.current = null;
     drag.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (openFootprint && press) openSplatScene(press.scene);
   };
 
   const onWheel = (event: React.WheelEvent<HTMLCanvasElement>): void => {
     if (!scene || marquee.current) return;
+    footprintPress.current = null;
+    setHoveredSplat(null);
     const rect = event.currentTarget.getBoundingClientRect();
     scene.zoomAroundPixels(event.deltaY, event.clientX - rect.left, event.clientY - rect.top);
   };
 
   const explorer2d = !compare.active && !globeMode && !splatScene;
-  const detectedScene = explorer2d && scene ? findIntersectingScene(markedBounds ?? scene.viewBounds()) : undefined;
+  const detectedScenes = explorer2d && scene ? findIntersectingScenes(markedBounds ?? scene.viewBounds()) : [];
+  const detectedScene = detectedScenes.find((candidate) => candidate.id === preferredSplatId) ?? detectedScenes[0];
   const isDifference = settings?.layer === 'difference';
   const showSwipeSeam = compare.active && !isDifference && settings?.swipeEnabled;
 
@@ -242,14 +284,17 @@ function CanvasAndScene({
         {scene && <Basemap scene={scene} />}
         <canvas
           ref={canvasRef}
-          className={compare.active ? 'map science' : `map${markMode ? ' marking' : ''}`}
+          className={compare.active ? 'map science' : `map${markMode ? ' marking' : ''}${showFootprints && hoveredSplat && !markMode ? ' over-splat' : ''}`}
+          title={showFootprints && hoveredSplat ? `Open ${hoveredSplat.name} in 3D` : undefined}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
           onLostPointerCapture={endDrag}
+          onPointerLeave={() => setHoveredSplat(null)}
           onWheel={onWheel}
         />
+        {explorer2d && showFootprints && scene && <SplatFootprints view={scene.view} hoveredId={hoveredSplat?.id ?? null} onOpen={openSplatScene} />}
         {aoiSelection && explorer2d && <div className="aoi-marquee" aria-hidden="true" style={{
           left: Math.min(aoiSelection.start.x, aoiSelection.current.x),
           top: Math.min(aoiSelection.start.y, aoiSelection.current.y),
@@ -257,19 +302,30 @@ function CanvasAndScene({
           height: Math.abs(aoiSelection.current.y - aoiSelection.start.y),
         }} />}
       </div>
-      {splatScene && <SplatView active sceneMeta={splatScene} entryBounds={splatEntryBounds!} onClose={() => setSplatScene(null)} />}
+      {splatScene && <SplatView key={splatScene.id} active sceneMeta={splatScene} entryBounds={splatEntryBounds!} onClose={() => setSplatScene(null)} />}
       {explorer2d && <div className="urban-tools">
         <button type="button" className="secondary" aria-pressed={markMode} onClick={() => {
           setMarkMode((value) => !value); setMarkedBounds(null); setAoiSelection(null);
         }}>Mark Area</button>
         <span>or Shift + drag</span>
-        {SKYFALL_SCENES.map((city) => <button type="button" className="secondary" key={city.id} onClick={() => {
-          setMarkedBounds(null); setAoiSelection(null); scene?.fitBounds(city.bounds);
-        }}>{city.city === 'JAX' ? 'Jacksonville' : 'New York City'}</button>)}
+        <select className="urban-scene-select" aria-label="Choose 3D scene" value="" onChange={(event) => {
+          const target = SKYFALL_SCENES.find((candidate) => candidate.id === event.target.value);
+          if (!target) return;
+          setPreferredSplatId(target.id);
+          setMarkedBounds(null); setAoiSelection(null); scene?.fitBounds(target.bounds);
+        }}>
+          <option value="" disabled>Choose 3D scene…</option>
+          {SKYFALL_SCENES.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+        </select>
         {markedBounds && <button type="button" className="secondary" onClick={() => { setMarkedBounds(null); setAoiSelection(null); }}>Clear area</button>}
       </div>}
       {explorer2d && (detectedScene || markedBounds) && <div className="urban-prompt" role="status">
-        {detectedScene ? <><span>{detectedScene.name} · 3D scene detected</span><button type="button" className="primary" onClick={() => { setSplatEntryBounds(scene!.viewBounds()); setSplatScene(detectedScene); }}>Switch to 3D Urban View</button></> : <span>No Skyfall 3D scene in this area. Try Jacksonville or New York City.</span>}
+        {detectedScene ? <>
+          {detectedScenes.length > 1 ? <select className="urban-scene-select" aria-label="3D scenes in this area" value={detectedScene.id} onChange={(event) => setPreferredSplatId(event.target.value)}>
+            {detectedScenes.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+          </select> : <span>{detectedScene.name} · 3D scene detected</span>}
+          <button type="button" className="primary" onClick={() => openSplatScene(detectedScene)}>Switch to 3D Urban View</button>
+        </> : <span>No aligned Skyfall 3D scene in this area. Browse Choose 3D scene.</span>}
       </div>}
       {scene && settings && (
         <GlobeView
@@ -292,6 +348,25 @@ function CanvasAndScene({
       >
         {globeMode ? '2D map' : '3D globe'}
       </button>
+
+      {explorer2d && <button
+        type="button"
+        className="map-mode-toggle footprints-toggle"
+        aria-pressed={showFootprints}
+        aria-label="3D Footprints"
+        title={showFootprints ? 'Hide 3D coverage' : 'Show 3D coverage · click a green area to open'}
+        disabled={!scene}
+        onClick={() => {
+          setShowFootprints((current) => !current);
+          setHoveredSplat(null);
+          footprintPress.current = null;
+        }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+          <path d="m12 3 9 5v8l-9 5-9-5V8l9-5Zm0 10 9-5M12 13 3 8m9 5v8" />
+        </svg>
+        3D Footprints
+      </button>}
 
       {status.phase === 'error' && (
         <div className="banner error">

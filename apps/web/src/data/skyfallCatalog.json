@@ -1,0 +1,14 @@
+[
+  { "id": "JAX_068", "city": "JAX", "name": "Jacksonville · UF Health campus (JAX 068)" },
+  { "id": "NYC_004", "city": "NYC", "name": "New York City · World Financial Center (NYC 004)" },
+  { "id": "JAX_004", "city": "JAX", "name": "Jacksonville · Residential (JAX 004)" },
+  { "id": "NYC_010", "city": "NYC", "name": "New York City · Union Square (NYC 010)" },
+  { "id": "JAX_164", "city": "JAX", "name": "Jacksonville · City Hall (JAX 164)" },
+  { "id": "JAX_168", "city": "JAX", "name": "Jacksonville · Villa (JAX 168)" },
+  { "id": "JAX_175", "city": "JAX", "name": "Jacksonville · Stadium (JAX 175)" },
+  { "id": "JAX_214", "city": "JAX", "name": "Jacksonville · Office Building (JAX 214)" },
+  { "id": "JAX_260", "city": "JAX", "name": "Jacksonville · Lake Side (JAX 260)" },
+  { "id": "JAX_264", "city": "JAX", "name": "Jacksonville · Factory (JAX 264)" },
+  { "id": "NYC_219", "city": "NYC", "name": "New York City · E 12th St. (NYC 219)" },
+  { "id": "NYC_336", "city": "NYC", "name": "New York City · Albany St. (NYC 336)" }
+]

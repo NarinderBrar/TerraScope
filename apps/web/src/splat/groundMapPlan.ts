@@ -1,6 +1,7 @@
 import { lonLatToWorldPx, worldPxToLonLat, TILE_SIZE } from '@terrascope/contracts';
 import type { GeoBounds, SplatSceneMeta } from '../data/splatScenes';
 import { geographicToModel } from '../data/splatGeoreference';
+import { WORLD_IMAGERY_MAX_ZOOM } from '../map/worldImagery';
 
 export interface GroundMapTile { z: number; x: number; y: number; left: number; top: number }
 export interface GroundMapPlan {
@@ -22,7 +23,7 @@ export function planGroundMap(scene: Pick<SplatSceneMeta, 'bounds' | 'georeferen
   // Detailed aerial tiles: select the highest level that fits the actual GPU
   // texture limit (including the complete tile border), capped at 64 MiB RGBA.
   const budget = Math.max(256, Math.min(4096, Math.floor(maxTextureSize / TILE_SIZE) * TILE_SIZE));
-  let z = 18;
+  let z = WORLD_IMAGERY_MAX_ZOOM;
   const extent = (level: number): { x0: number; x1: number; y0: number; y1: number; n: number } => {
     const nw = lonLatToWorldPx({ lon: bounds.west, lat: bounds.north }, level);
     const se = lonLatToWorldPx({ lon: bounds.east, lat: bounds.south }, level);

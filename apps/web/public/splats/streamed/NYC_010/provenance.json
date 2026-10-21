@@ -1,0 +1,18 @@
+{
+  "id": "NYC_010",
+  "converter": "@playcanvas/splat-transform@2.3.1",
+  "sourceSha256": "a4febf9866e1edddcfd24c1cde9c6ca529436a5259980640cd78b5d52c0c95a4",
+  "levels": {
+    "1": "full source detail (engine 0)",
+    "2": "25% merged (engine 1)",
+    "3": "6.25% merged (engine 2)"
+  },
+  "counts": [
+    3083544,
+    770886,
+    192722
+  ],
+  "leaves": 81,
+  "chunks": 51,
+  "maxChunkSplats": 97120
+}

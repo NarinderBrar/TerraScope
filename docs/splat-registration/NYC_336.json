@@ -1,0 +1,318 @@
+{
+  "scene": "NYC_336",
+  "reference": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer",
+  "tileOrigin": {
+    "z": 18,
+    "x0": 77168,
+    "y0": 98557
+  },
+  "modelRaster": {
+    "left": -600,
+    "top": 600,
+    "unitsPerPixel": 1
+  },
+  "modelRasterToReferencePixels": [
+    [
+      2.218670758931599,
+      -0.003676320929002941,
+      228.7857002512137
+    ],
+    [
+      0.003676320929002941,
+      2.218670758931599,
+      346.3810377664257
+    ]
+  ],
+  "matchedFeatures": [
+    {
+      "model": [
+        556.9241943359375,
+        929.9174194335938
+      ],
+      "satellite": [
+        1460.656094205649,
+        2414.638883493057
+      ]
+    },
+    {
+      "model": [
+        569.3937377929688,
+        478.27294921875
+      ],
+      "satellite": [
+        1494.5273006630796,
+        1410.1337714803399
+      ]
+    },
+    {
+      "model": [
+        570.9501953125,
+        793.0758056640625
+      ],
+      "satellite": [
+        1492.194798143932,
+        2107.7615225884074
+      ]
+    },
+    {
+      "model": [
+        571.0194091796875,
+        822.1234130859375
+      ],
+      "satellite": [
+        1494.8739407000853,
+        2174.4389517482205
+      ]
+    },
+    {
+      "model": [
+        583.76806640625,
+        895.9885864257812
+      ],
+      "satellite": [
+        1524.1913508075754,
+        2336.9642337944797
+      ]
+    },
+    {
+      "model": [
+        589.8731689453125,
+        728.908447265625
+      ],
+      "satellite": [
+        1534.6929155456655,
+        1965.37034387333
+      ]
+    },
+    {
+      "model": [
+        634.1171264648438,
+        616.555908203125
+      ],
+      "satellite": [
+        1631.6189954886736,
+        1714.8771303773997
+      ]
+    },
+    {
+      "model": [
+        642.0386962890625,
+        651.033203125
+      ],
+      "satellite": [
+        1648.0133075904905,
+        1792.2218262531678
+      ]
+    },
+    {
+      "model": [
+        678.8792724609375,
+        300.55120849609375
+      ],
+      "satellite": [
+        1734.9818627422928,
+        1017.9383074182782
+      ]
+    },
+    {
+      "model": [
+        687.4168090820312,
+        524.3411254882812
+      ],
+      "satellite": [
+        1750.0116583896015,
+        1513.8669163628551
+      ]
+    },
+    {
+      "model": [
+        691.3846435546875,
+        269.58148193359375
+      ],
+      "satellite": [
+        1763.6173316476074,
+        944.0960971681301
+      ]
+    },
+    {
+      "model": [
+        781.8046264648438,
+        387.9736633300781
+      ],
+      "satellite": [
+        1963.3495370591877,
+        1208.7529747622689
+      ]
+    },
+    {
+      "model": [
+        847.0904541015625,
+        760.920166015625
+      ],
+      "satellite": [
+        2102.396917457924,
+        2037.140843590756
+      ]
+    },
+    {
+      "model": [
+        865.3123779296875,
+        445.7998046875
+      ],
+      "satellite": [
+        2145.611581866628,
+        1337.0324515289694
+      ]
+    },
+    {
+      "model": [
+        925.5850830078125,
+        744.1675415039062
+      ],
+      "satellite": [
+        2277.2633103300923,
+        2000.783906960443
+      ]
+    }
+  ],
+  "method": "Decoded-SOG top-down point projection matched to cached Esri aerial imagery; author location and coarse SIFT used only for initialization; spatially constrained SIFT/RANSAC similarity; spatially deduplicated features; least-squares refit with every fifth feature withheld from the final fit. Road, bridge, park and building outlines inspected across the projected footprint.",
+  "sourceAssetSha256": "b01a5df4262b70a64e2f32046544c2f681ca3497804009129e1e54790e0647d0",
+  "validationFeatures": [
+    {
+      "model": [
+        522.1649780273438,
+        827.9954833984375
+      ],
+      "satellite": [
+        1385.3290206820916,
+        2185.234199971842
+      ]
+    },
+    {
+      "model": [
+        582.3286743164062,
+        649.6265869140625
+      ],
+      "satellite": [
+        1519.210200769147,
+        1789.1870952363197
+      ]
+    },
+    {
+      "model": [
+        662.7837524414062,
+        649.6550903320312
+      ],
+      "satellite": [
+        1698.1973087717715,
+        1787.6016345668404
+      ]
+    },
+    {
+      "model": [
+        833.0032958984375,
+        456.6856994628906
+      ],
+      "satellite": [
+        2073.625970233391,
+        1360.6653881908164
+      ]
+    }
+  ],
+  "georeference": {
+    "origin": {
+      "lon": -74.01752231045515,
+      "lat": 40.71024829908964
+    },
+    "modelToMercator": [
+      1.3249109340308445,
+      0.002195367553402994,
+      -0.002195367553402994,
+      1.3249109340308445
+    ],
+    "groundZ": -43
+  },
+  "coverageModelBounds": [
+    -60,
+    -300,
+    290,
+    300
+  ],
+  "fitResidualMetres": {
+    "count": 15,
+    "median": 1.1638822313705188,
+    "max": 1.9174012998091767
+  },
+  "validationResidualMetres": {
+    "count": 4,
+    "median": 0.8325747124566114,
+    "max": 1.3106850105147045
+  },
+  "groundMetresPerModelUnit": 1.0043072983919927,
+  "rotationDegrees": -0.0949385931835717,
+  "groundHeightMethod": "Plane below locally sampled reconstructed street surfaces; excludes subsurface floaters. Local Z, not surveyed elevation.",
+  "groundSamples": [
+    {
+      "modelXY": [
+        195,
+        0
+      ],
+      "medianZ": -30.422905921936035,
+      "count": 136,
+      "radius": 5,
+      "heightFilter": "finite local Z and opacity logit > 1",
+      "heightQuantiles": {
+        "p10": -36.21897888183594,
+        "p25": -33.68532085418701,
+        "p50": -30.422905921936035,
+        "p75": -26.874784469604492,
+        "p90": -24.38679599761963
+      }
+    },
+    {
+      "modelXY": [
+        225,
+        150
+      ],
+      "medianZ": -35.42098045349121,
+      "count": 84,
+      "radius": 5,
+      "heightFilter": "finite local Z and opacity logit > 1",
+      "heightQuantiles": {
+        "p10": -39.14401817321777,
+        "p25": -37.49526786804199,
+        "p50": -35.42098045349121,
+        "p75": -32.91356658935547,
+        "p90": -30.913808822631836
+      }
+    },
+    {
+      "modelXY": [
+        145,
+        -250
+      ],
+      "medianZ": -29.06497287750244,
+      "count": 128,
+      "radius": 5,
+      "heightFilter": "finite local Z and opacity logit > 1",
+      "heightQuantiles": {
+        "p10": -37.47801246643066,
+        "p25": -32.082314014434814,
+        "p50": -29.06497287750244,
+        "p75": -25.63612174987793,
+        "p90": -24.057332611083986
+      }
+    }
+  ],
+  "coverageMethod": "Conservative dense rectangular interior measured from decoded model point projection; excludes sparse boundary floaters. Local coordinates in coverageModelBounds. Landside core excludes sparsely reconstructed river water.",
+  "referenceSearchHint": {
+    "id": "NYC_336",
+    "lon": -74.01753397,
+    "lat": 40.71020129,
+    "source": "https://superspl.at/scene/5aea40f2"
+  },
+  "referenceImageSize": {
+    "width": 3328,
+    "height": 3328
+  }
+}

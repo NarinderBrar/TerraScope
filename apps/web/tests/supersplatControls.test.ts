@@ -36,3 +36,23 @@ it('removes every pointer/window listener on teardown without recursive cleanup'
   pointer('pointermove', 20);
   expect(setAzimElev).not.toHaveBeenCalled();
 });
+
+it('supports regional zoom-out and adjusts the clipping planes with distance', async () => {
+  const { Camera } = await import('../src/splat/supersplat/camera');
+  const { Vec3 } = await import('playcanvas');
+  const position = new Vec3();
+  const mainCamera = {
+    camera: { fov: 50, farClip: 1000, nearClip: .1 }, getPosition: () => position,
+    setPosition: (x: number, y: number, z: number) => position.set(x, y, z), lookAt: vi.fn(),
+  };
+  const camera = Object.assign(Object.create(Camera.prototype) as Camera, {
+    mainCamera, sceneRadius: 1000, distanceTween: { value: { distance: 1 } }, focalPoint: new Vec3(), azim: 0, elevation: -90,
+  });
+  camera.setDistance(500 * camera.fovFactor);
+  expect(mainCamera.getPosition().y).toBeCloseTo(500000);
+  expect(camera.camera.farClip).toBeGreaterThan(500000);
+  expect(camera.camera.nearClip).toBeLessThan(10);
+  camera.setDistance(.0001);
+  expect(mainCamera.getPosition().y).toBeCloseTo(5);
+  expect(camera.camera.nearClip).toBe(.1);
+});

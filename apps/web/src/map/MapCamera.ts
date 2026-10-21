@@ -17,6 +17,7 @@ import {
   type LonLat,
   type TileCoord,
 } from '@terrascope/contracts';
+import { WORLD_IMAGERY_MAX_ZOOM } from './worldImagery';
 
 export interface Viewport {
   /** CSS pixels. */
@@ -35,12 +36,10 @@ export interface CameraState {
 }
 
 export const MIN_ZOOM = 2;
-/**
- * Sentinel-2's finest bands are 10 m. At z14 a screen pixel is ~9.5 m at the
- * equator and ~7.5 m at mid-latitudes, so one sensor pixel is about one screen
- * pixel. Past it, zooming only enlarges the same pixels.
- */
-export const MAX_ZOOM = 14;
+/** Explorer imagery and navigation can resolve much finer detail than Sentinel-2. */
+export const MAX_ZOOM = WORLD_IMAGERY_MAX_ZOOM;
+/** Preserve the numeric pipeline's tile grid when browsing beyond its native detail. */
+export const MAX_ANALYSIS_TILE_ZOOM = 14;
 export const MIN_LATITUDE = -MAX_LATITUDE;
 export const MAX_LATITUDE_CLAMP = MAX_LATITUDE;
 
@@ -66,8 +65,8 @@ export function wrapLongitude(lon: number): number {
 }
 
 /** Zoom actually used for tile selection and texture addressing. */
-export function tileZoom(state: CameraState): number {
-  return Math.min(state.maxZoom, Math.max(0, Math.floor(state.zoom)));
+export function tileZoom(state: CameraState, maxTileZoom = state.maxZoom): number {
+  return Math.min(state.maxZoom, maxTileZoom, Math.max(0, Math.floor(state.zoom)));
 }
 
 export interface ViewportTile {
@@ -85,8 +84,8 @@ export interface ViewportTile {
  * The returned coordinates are relative to the camera's world pixel position,
  * which keeps the magnitude small regardless of zoom.
  */
-export function visibleTiles(state: CameraState, viewport: Viewport): ViewportTile[] {
-  const z = tileZoom(state);
+export function visibleTiles(state: CameraState, viewport: Viewport, maxTileZoom = state.maxZoom): ViewportTile[] {
+  const z = tileZoom(state, maxTileZoom);
   const camera = lonLatToWorldPx(state.center, z);
   const scale = 2 ** (state.zoom - z);
 

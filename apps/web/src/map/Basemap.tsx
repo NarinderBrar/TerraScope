@@ -1,5 +1,5 @@
 /**
- * The explore-mode basemap: Sentinel-2 cloudless imagery with a label overlay.
+ * The explore-mode basemap: Esri World Imagery with Esri reference labels.
  *
  * DOM images rather than GPU textures, on purpose. These are finished JPEG and
  * PNG pictures, not measurements: there is nothing for the numeric pipeline to
@@ -21,15 +21,9 @@
 import { useCallback, useSyncExternalStore } from 'react';
 import { lonLatToWorldPx, TILE_SIZE } from '@terrascope/contracts';
 import type { MapScene, MapView } from '../app/MapScene';
+import { WORLD_IMAGERY_ATTRIBUTION, WORLD_IMAGERY_MAX_ZOOM, WORLD_LABELS_ATTRIBUTION,
+  worldImageryUrl, worldLabelsUrl } from './worldImagery';
 
-const IMAGERY = (z: number, x: number, y: number): string =>
-  `https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/${z}/${y}/${x}.jpg`;
-const LABELS = (z: number, x: number, y: number): string =>
-  `https://tiles.maps.eox.at/wmts/1.0.0/overlay_bright_3857/default/g/${z}/${y}/${x}.png`;
-
-/** Beyond this the mosaic has no more detail; tiles are scaled up instead. */
-const MAX_IMAGERY_ZOOM = 15;
-const MAX_LABEL_ZOOM = 16;
 const COARSE_DROP = 3;
 /** Loaded levels kept under the view as stand-ins, coarser and finer. */
 const FALLBACK_COARSER = 6;
@@ -39,35 +33,38 @@ const FALLBACK_FINER = 2;
 const loaded = new Set<string>();
 
 export const BASEMAP_ATTRIBUTION =
-  'Sentinel-2 cloudless 2024 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2024) · Labels © OpenStreetMap contributors, EOX';
+  `${WORLD_IMAGERY_ATTRIBUTION} · ${WORLD_LABELS_ATTRIBUTION}`;
 
 export function Basemap({ scene }: { scene: MapScene }): React.JSX.Element {
   const view = useMapView(scene);
-  const z = Math.min(MAX_IMAGERY_ZOOM, Math.max(0, Math.floor(view.camera.zoom)));
+  const z = Math.min(WORLD_IMAGERY_MAX_ZOOM, Math.max(0, Math.floor(view.camera.zoom)));
   const coarse = Math.max(0, z - COARSE_DROP);
-  const labels = Math.min(MAX_LABEL_ZOOM, Math.max(0, Math.floor(view.camera.zoom)));
+  // Keep a broad overview beneath deep views even where regional detail is absent.
+  const overview = Math.min(8, coarse);
+  const labels = z;
   // Bottom to top: coarsest stand-ins, finer stand-ins, then the view's zoom.
-  const levels: number[] = [];
+  const levels: number[] = [overview];
   for (let d = FALLBACK_COARSER; d >= 1; d -= 1) levels.push(z - d);
+  levels.sort((a, b) => a - b);
   for (let d = FALLBACK_FINER; d >= 1; d -= 1) levels.push(z + d);
   levels.push(z);
   return (
     <div className="basemap" aria-hidden="true">
-      {levels
-        .filter((level) => level >= 0 && level <= MAX_IMAGERY_ZOOM)
+      {[...new Set(levels)]
+        .filter((level) => level >= 0 && level <= WORLD_IMAGERY_MAX_ZOOM)
         .map((level) => (
           <TileLayer
             key={`imagery-${level}`}
             view={view}
             z={level}
-            url={IMAGERY}
+            url={worldImageryUrl}
             className={level === z ? 'sharp' : 'fallback'}
-            loadedOnly={level !== z && level !== coarse}
+            loadedOnly={level !== z && level !== coarse && level !== overview}
           />
         ))}
       {/* Labels are the view's zoom only: two label levels at once would draw
           every name twice at different sizes. */}
-      <TileLayer key={`labels-${labels}`} view={view} z={labels} url={LABELS} className="labels" loadedOnly={false} />
+      <TileLayer key={`labels-${labels}`} view={view} z={labels} url={worldLabelsUrl} className="labels" loadedOnly={false} />
     </div>
   );
 }

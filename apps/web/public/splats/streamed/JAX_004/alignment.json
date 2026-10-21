@@ -1,0 +1,29 @@
+{
+  "sourceSha256": "5cff57f7bc5bcea0ec068a7d79b388957ee1478e11422255a299f73b189883a0",
+  "fullDetailSplats": 1524134,
+  "sampledPositions": 11264,
+  "maxNearestSourceDistanceModelUnits": 0.06692165731128709,
+  "p99NearestSourceDistanceModelUnits": 0.04700012475667944,
+  "thresholdModelUnits": 0.15,
+  "method": "512 uniform positions per chunk; 3D nearest conversion-input position in the registered frame",
+  "levels": {
+    "1": {
+      "splats": 1524134,
+      "sampledPositions": 11264,
+      "maxNearestInputDistanceModelUnits": 0.06692165731128709,
+      "p99NearestInputDistanceModelUnits": 0.04700012475667944
+    },
+    "2": {
+      "splats": 381034,
+      "sampledPositions": 3072,
+      "maxNearestInputDistanceModelUnits": 0.06496011896429182,
+      "p99NearestInputDistanceModelUnits": 0.051788582766813016
+    },
+    "3": {
+      "splats": 95259,
+      "sampledPositions": 1024,
+      "maxNearestInputDistanceModelUnits": 0.0813828878060938,
+      "p99NearestInputDistanceModelUnits": 0.06479591361712136
+    }
+  }
+}

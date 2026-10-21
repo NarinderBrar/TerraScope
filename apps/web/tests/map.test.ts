@@ -7,9 +7,10 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { TILE_SIZE, groundResolution, lonLatToTile, tileBounds } from '@terrascope/contracts';
+import { TILE_SIZE, groundResolution, lonLatToTile, tileBounds, worldPxToLonLat } from '@terrascope/contracts';
 import {
   MAX_ZOOM,
+  MAX_ANALYSIS_TILE_ZOOM,
   MIN_ZOOM,
   clampCamera,
   createCamera,
@@ -40,7 +41,7 @@ describe('world projection round-trips', () => {
       [174.7, -41.3],
       [-0.1276, 51.5072],
     ]) {
-      for (const z of [2, 8, 13, 18]) {
+      for (const z of [2, 8, 13, 18, 20]) {
         const px = lonLatToTile(lon, lat, z);
         expect(px.z).toBe(z);
         // A tile can only be recovered to its own precision, so compare the
@@ -86,6 +87,25 @@ function boundsCentre(bounds: [number, number, number, number]): [number, number
 }
 
 describe('visible tiles', () => {
+  it('overzooms analysis tiles on their existing grid while the explorer reaches level 20', () => {
+    const camera = createCamera({ lon: -73.9897, lat: 40.7349 }, 20);
+    expect(camera.zoom).toBe(20);
+    expect(tileZoom(camera)).toBe(20);
+    expect(tileZoom(camera, MAX_ANALYSIS_TILE_ZOOM)).toBe(14);
+    const tiles = visibleTiles(camera, viewport, MAX_ANALYSIS_TILE_ZOOM);
+    expect(tiles.length).toBeGreaterThan(0);
+    for (const { tile, screenX, screenY } of tiles) {
+      expect(tile.z).toBe(14);
+      // The capped numeric grid must occupy exactly the same geographic map.
+      const origin = worldPxToLonLat(tile.x * TILE_SIZE, tile.y * TILE_SIZE, tile.z);
+      const projected = screenToLonLat(camera, viewport, screenX, screenY);
+      expect(projected.lon).toBeCloseTo(origin.lon, 9);
+      expect(projected.lat).toBeCloseTo(origin.lat, 9);
+    }
+    const size = TILE_SIZE * 2 ** (camera.zoom - MAX_ANALYSIS_TILE_ZOOM);
+    expect(Math.min(...tiles.map((tile) => tile.screenX))).toBeLessThanOrEqual(0);
+    expect(Math.max(...tiles.map((tile) => tile.screenX + size))).toBeGreaterThanOrEqual(viewport.width);
+  });
   it('covers the viewport with no gaps', () => {
     const camera = createCamera({ lon: -121.3, lat: 38.1 }, 11);
     const tiles = visibleTiles(camera, viewport);
@@ -152,6 +172,17 @@ describe('visible tiles', () => {
 });
 
 describe('panning and zooming', () => {
+  it('preserves the cursor anchor across fine zoom levels and the level-20 limit', () => {
+    const camera = createCamera({ lon: -73.9897, lat: 40.7349 }, 19.75);
+    const anchor = screenToLonLat(camera, viewport, 200, 150);
+    for (const delta of [-400, -100, 100, 400]) {
+      const next = zoomAround(camera, viewport, delta, 200, 150);
+      const actual = screenToLonLat(next, viewport, 200, 150);
+      expect(next.zoom).toBeLessThanOrEqual(20);
+      expect(actual.lon).toBeCloseTo(anchor.lon, 9);
+      expect(actual.lat).toBeCloseTo(anchor.lat, 9);
+    }
+  });
   it('pans by the requested pixel delta', () => {
     const before = createCamera({ lon: -121.3, lat: 38.1 }, 12);
     const after = panBy(before, 256, 0);

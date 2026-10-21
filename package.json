@@ -21,6 +21,9 @@
     "benchmark": "node scripts/benchmark.mjs",
     "verify": "bash scripts/verify.sh",
     "prepare:skyfall": "node scripts/prepare-skyfall.mjs",
+    "prepare:skyfall-reference": "node scripts/prepare-skyfall-reference.mjs",
+    "prepare:skyfall-lods": "node scripts/prepare-skyfall-lods.mjs",
+    "test:skyfall": "node --test scripts/tests/*.test.mjs",
     "test:splat": "node scripts/verify-splat-view.mjs"
   },
   "devDependencies": {
