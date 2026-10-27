@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "scene": "JAX_260",
+  "kind": "langsplat-building-glow",
+  "category": "buildings",
+  "coordinateFrame": "registered-model-local",
+  "sourceSha256": "d9c11db30dadea0fab2d90c90d4985392921e891df553f31dfbdcb55f4a767ea",
+  "asset": "JAX_260-building-glow.bin",
+  "assetSha256": "8821d696069ce1ab2def1269d9138df829aec16e2621a051794f7ceff6decd2c",
+  "byteLength": 16777216,
+  "gridSize": [
+    512,
+    512,
+    64
+  ],
+  "atlasSize": [
+    4096,
+    4096
+  ],
+  "tilesPerRow": 8,
+  "boundsMin": [
+    -436.4670104980469,
+    -406.2502136230469,
+    -36.500465393066406
+  ],
+  "boundsMax": [
+    416.86328125,
+    385.8548583984375,
+    147.3372344970703
+  ],
+  "minimumLocalZ": -37.500465393066406,
+  "fieldVersion": 3,
+  "evidenceMode": "multiview",
+  "nonzeroVoxels": 119382,
+  "maximumWeight": 1.0,
+  "basis": "Full 512-D LangSplat SAM/CLIP features, multilevel masks, occlusion-tested camera projection, median/upper-quartile multi-view fusion. Uncertain trained latent relevance is capped below the activation ramp where fewer than two views observe a centre. RGB supports semantically plausible vegetation and small nearby mask gaps; no colour-only labels.Fixed viewer cutoff; spatial smoothing in the original registered frame. No OSM labels.",
+  "limitations": "Approximate spatial transfer to full-detail Gaussians. Building queries remain unvalidated; missed buildings and false matches remain. Not object segmentation."
+}

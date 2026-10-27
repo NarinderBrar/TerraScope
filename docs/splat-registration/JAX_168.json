@@ -1050,7 +1050,7 @@
       -0.0012359839098766904,
       1.1601508824140814
     ],
-    "groundZ": 18
+    "groundZ": 26.654120720917614
   },
   "coverageModelBounds": [
     -370,
@@ -1070,23 +1070,23 @@
   },
   "groundMetresPerModelUnit": 1.001359182087344,
   "rotationDegrees": -0.06104088344295221,
-  "groundHeightMethod": "Plane below locally sampled reconstructed street surfaces; excludes subsurface floaters. Local Z, not surveyed elevation.",
+  "groundHeightMethod": "Median of opaque source-SOG street-patch medians, less 0.20 ground metres. Shared map, entry camera and urban-analysis datum.",
   "groundSamples": [
     {
       "modelXY": [
         -80,
         60
       ],
-      "medianZ": 27.353891372680664,
-      "count": 67,
+      "medianZ": 27.267423314875636,
+      "count": 54,
       "radius": 5,
-      "heightFilter": "finite local Z and opacity logit > 1",
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
       "heightQuantiles": {
-        "p10": 23.581771850585938,
-        "p25": 26.275227546691895,
-        "p50": 27.353891372680664,
-        "p75": 27.81080913543701,
-        "p90": 28.29417266845703
+        "p10": 23.485536385831434,
+        "p25": 25.88778987327464,
+        "p50": 27.267423314875636,
+        "p75": 27.498906134564322,
+        "p90": 27.870783918278285
       }
     },
     {
@@ -1094,16 +1094,16 @@
         -100,
         -150
       ],
-      "medianZ": 30.674092292785645,
-      "count": 102,
+      "medianZ": 30.616503824291804,
+      "count": 73,
       "radius": 5,
-      "heightFilter": "finite local Z and opacity logit > 1",
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
       "heightQuantiles": {
-        "p10": 28.853375053405763,
-        "p25": 30.027266025543213,
-        "p50": 30.674092292785645,
-        "p75": 32.840362548828125,
-        "p90": 35.42685813903809
+        "p10": 28.791825505121572,
+        "p25": 30.014153975391523,
+        "p50": 30.616503824291804,
+        "p75": 33.21626402048367,
+        "p90": 37.20905337461286
       }
     },
     {
@@ -1111,16 +1111,16 @@
         160,
         180
       ],
-      "medianZ": 23.24988079071045,
-      "count": 68,
+      "medianZ": 23.290853095735443,
+      "count": 59,
       "radius": 5,
-      "heightFilter": "finite local Z and opacity logit > 1",
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
       "heightQuantiles": {
-        "p10": 20.083846855163575,
-        "p25": 21.66214370727539,
-        "p50": 23.24988079071045,
-        "p75": 24.14124298095703,
-        "p90": 26.48550987243653
+        "p10": 20.129137542459798,
+        "p25": 21.707883041763132,
+        "p50": 23.290853095735443,
+        "p75": 24.150232095841844,
+        "p90": 26.348800530104832
       }
     },
     {
@@ -1128,16 +1128,16 @@
         80,
         -300
       ],
-      "medianZ": 26.757726669311523,
-      "count": 62,
+      "medianZ": 26.44027519207203,
+      "count": 39,
       "radius": 5,
-      "heightFilter": "finite local Z and opacity logit > 1",
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
       "heightQuantiles": {
-        "p10": 23.153298759460448,
-        "p25": 25.199567317962646,
-        "p50": 26.757726669311523,
-        "p75": 28.12237024307251,
-        "p90": 31.728727149963376
+        "p10": 22.584067364233366,
+        "p25": 23.886285817282506,
+        "p50": 26.44027519207203,
+        "p75": 27.503678813616908,
+        "p90": 28.39327939983898
       }
     }
   ],
@@ -1151,5 +1151,15 @@
   "referenceImageSize": {
     "width": 3072,
     "height": 3072
+  },
+  "verticalAlignment": {
+    "previousGroundZ": 18,
+    "groundZ": 26.654120720917614,
+    "medianStreetZ": 26.853849253473832,
+    "clearanceGroundMetres": 0.2,
+    "groundMetresPerModelUnit": 1.0013591820873442,
+    "method": "scripts/calibrate-splat-ground.py",
+    "sourceSha256": "e1266d39ce7b0f706fa5d0794e8d4bb107ffee76015523f2a483d0f63e617f69",
+    "limitation": "Representative flat datum, not a terrain model. Local street variation and reconstruction errors remain."
   }
 }

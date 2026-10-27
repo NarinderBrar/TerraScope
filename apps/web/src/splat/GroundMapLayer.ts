@@ -1,15 +1,15 @@
 import {
-  ADDRESS_CLAMP_TO_EDGE, CULLFACE_NONE, FILTER_LINEAR, FILTER_LINEAR_MIPMAP_LINEAR,
+  ADDRESS_CLAMP_TO_EDGE, BLEND_NONE, BLEND_NORMAL, CULLFACE_NONE, FILTER_LINEAR, FILTER_LINEAR_MIPMAP_LINEAR,
   PIXELFORMAT_RGBA8, PRIMITIVE_TRIANGLES, Color, Entity, Mat4, Mesh, MeshInstance, StandardMaterial, Texture, Vec3,
 } from 'playcanvas';
 import type { PCApp } from './supersplat/pc-app';
 import type { Camera } from './supersplat/camera';
 import type { SplatGeoreference } from '../data/splatGeoreference';
-import { fetchWorldImageryTile } from '../map/worldImagery';
+import { groundTileImages } from './GroundTileImages';
 import { GroundTileStream } from './GroundTileStream';
 import { groundTileKey, groundTileUvs, planGroundTiles, type GroundTile, type Point3, type VisibleGroundTile } from './groundTilePlan';
 
-export interface GroundMapLayer { update(): void; retry(): void; setVisible(visible: boolean): void; dispose(): void }
+export interface GroundMapLayer { update(): void; retry(): void; setVisible(visible: boolean): void; setOpacity?(value: number): void; dispose(): void }
 export type GroundMapStatus = 'loading' | 'ready' | 'unavailable';
 interface TileResource { texture: Texture; material: StandardMaterial }
 
@@ -18,12 +18,13 @@ export function createGroundMap(
   app: PCApp, modelRoot: Entity, reference: SplatGeoreference, camera: Camera,
   onStatus: (status: GroundMapStatus) => void,
 ): GroundMapLayer {
-  const root = new Entity('Streaming satellite ground');
+  const root = new Entity('Streaming satellite ground', app);
   modelRoot.addChild(root);
   const inverse = new Mat4();
   const meshes = new Map<string, { entity: Entity; mesh: Mesh; instance: MeshInstance; source: string }>();
   let tiles: VisibleGroundTile[] = [];
   let visible = true;
+  let opacity = 1;
   let disposed = false;
   let signature = '';
   let lastUpdate = -Infinity;
@@ -31,19 +32,18 @@ export function createGroundMap(
   let status: GroundMapStatus = 'loading';
   onStatus(status);
 
+  const applyOpacity = (material: StandardMaterial): void => {
+    // Full-opacity imagery belongs in the opaque pass, before unified splats.
+    // Transparent tile sorting can otherwise paint whole tiles over buildings
+    // as their centres move relative to the camera during an orbit.
+    material.blendType = opacity === 1 ? BLEND_NONE : BLEND_NORMAL;
+    material.opacity = opacity;
+    material.update();
+  };
   const load = async (tile: GroundTile, signal: AbortSignal): Promise<TileResource | null> => {
-    const n = 2 ** tile.z;
-    const timeout = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
-    // Per-request fallback cache: cancelling an obsolete tile cannot poison a neighbour's request.
-    const image = await fetchWorldImageryTile(tile.z, ((tile.x % n) + n) % n, tile.y, timeout, new Map());
-    if (!image) return null;
-    const bitmap = await createImageBitmap(image.blob);
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = 256;
-    try {
-      timeout.throwIfAborted();
-      canvas.getContext('2d')!.drawImage(bitmap, image.left, image.top, image.size, image.size, 0, 0, 256, 256);
-    } finally { bitmap.close(); }
+    const canvas = await groundTileImages.get(tile.z, tile.x, tile.y, signal);
+    if (!canvas) return null;
+    signal.throwIfAborted();
     const texture = new Texture(app.graphicsDevice, {
       name: `Satellite ${groundTileKey(tile)}`, width: 256, height: 256,
       format: PIXELFORMAT_RGBA8, mipmaps: true, flipY: false,
@@ -60,7 +60,7 @@ export function createGroundMap(
     material.emissive = new Color(1, 1, 1);
     material.emissiveMap = texture;
     material.depthWrite = false;
-    material.update();
+    applyOpacity(material);
     return { texture, material };
   };
   const removeMesh = (key: string): void => {
@@ -86,12 +86,14 @@ export function createGroundMap(
         mesh.setIndices([0, 1, 2, 0, 2, 3]);
         mesh.update(PRIMITIVE_TRIANGLES);
         const instance = new MeshInstance(mesh, source.value.material);
-        const entity = new Entity(`Ground ${key}`);
+        applyOpacity(source.value.material);
+        const entity = new Entity(`Ground ${key}`, app);
         entity.addComponent('render', { meshInstances: [instance] });
         root.addChild(entity);
         entry = { entity, mesh, instance, source: sourceKey };
         meshes.set(key, entry);
       } else if (entry.source !== sourceKey) {
+        applyOpacity(source.value.material);
         entry.instance.material = source.value.material;
         entry.mesh.setUvs(0, groundTileUvs(tile, source.tile));
         entry.mesh.update(PRIMITIVE_TRIANGLES);
@@ -137,6 +139,14 @@ export function createGroundMap(
   update();
   return {
     update,
+    setOpacity: value => {
+      if (opacity === value) return;
+      opacity = Math.max(0, Math.min(1, value));
+      for (const entry of meshes.values()) {
+        const material = entry.instance.material as StandardMaterial;
+        applyOpacity(material);
+      }
+    },
     retry: () => { if (!disposed) { stream.retry(); update(); } },
     setVisible: (value) => {
       visible = value; root.enabled = value;

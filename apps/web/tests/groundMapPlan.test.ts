@@ -33,14 +33,22 @@ describe('satellite ground registration', () => {
       sourceAssetSha256?: string;
       georeference?: typeof scene.georeference;
       groundSamples?: { modelXY: [number, number]; medianZ: number }[];
+      verticalAlignment: { previousGroundZ: number; groundZ: number; medianStreetZ: number; clearanceGroundMetres: number; groundMetresPerModelUnit: number; sourceSha256: string };
     };
     expect(evidence.scene).toBe(scene.id);
     expect(evidence.matchedFeatures.length).toBeGreaterThanOrEqual(6);
+    expect(evidence.georeference).toEqual(scene.georeference);
+    const vertical = evidence.verticalAlignment;
+    expect(vertical.sourceSha256).toBe(manifest.assets.find(asset => asset.id === scene.id)?.sha256);
+    const streetHeights = evidence.groundSamples!.map(s => s.medianZ).sort((a, b) => a - b);
+    const midpoint = Math.floor(streetHeights.length / 2);
+    const median = streetHeights.length % 2 ? streetHeights[midpoint] : (streetHeights[midpoint - 1] + streetHeights[midpoint]) / 2;
+    expect(vertical.medianStreetZ).toBeCloseTo(median, 8);
+    expect((median - scene.georeference.groundZ) * vertical.groundMetresPerModelUnit).toBeCloseTo(.2, 8);
     if (evidence.validationFeatures) {
       expect(evidence.validationFeatures.length).toBeGreaterThanOrEqual(3);
       expect(evidence.sourceAssetSha256).toBe(manifest.assets.find((asset) => asset.id === scene.id)?.sha256);
       expect(evidence.georeference).toEqual(scene.georeference);
-      for (const sample of evidence.groundSamples!) expect(scene.georeference.groundZ).toBeLessThan(sample.medianZ);
     }
     // Includes withheld reference points that did not participate in the fitted transform.
     for (const feature of [...evidence.matchedFeatures, ...(evidence.validationFeatures ?? [])]) {

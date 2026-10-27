@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 1,
+  "scene": "JAX_168",
+  "kind": "langsplat-vegetation-glow",
+  "category": "vegetation",
+  "coordinateFrame": "registered-model-local",
+  "sourceSha256": "e1266d39ce7b0f706fa5d0794e8d4bb107ffee76015523f2a483d0f63e617f69",
+  "asset": "JAX_168-vegetation-glow.bin",
+  "assetSha256": "a5fca70f311079b0c1f87a582aa76c20b6d04d2106bc2ef6f2a3ba5e9b916490",
+  "byteLength": 16777216,
+  "gridSize": [
+    512,
+    512,
+    64
+  ],
+  "atlasSize": [
+    4096,
+    4096
+  ],
+  "tilesPerRow": 8,
+  "boundsMin": [
+    -424.7635498046875,
+    -447.8202209472656,
+    -45.090919494628906
+  ],
+  "boundsMax": [
+    444.7193298339844,
+    438.31488037109375,
+    99.43923950195312
+  ],
+  "minimumLocalZ": -46.090919494628906,
+  "fieldVersion": 3,
+  "evidenceMode": "multiview",
+  "nonzeroVoxels": 77746,
+  "maximumWeight": 1.0,
+  "basis": "Full 512-D LangSplat SAM/CLIP features, multilevel masks, occlusion-tested camera projection, median/upper-quartile multi-view fusion. Uncertain trained latent relevance is capped below the activation ramp where fewer than two views observe a centre. RGB supports semantically plausible vegetation and small nearby mask gaps; no colour-only labels.Fixed viewer cutoff; spatial smoothing in the original registered frame. No OSM labels.",
+  "limitations": "Approximate spatial transfer to full-detail Gaussians. Building queries remain unvalidated; missed buildings and false matches remain. Not object segmentation.",
+  "checkpointSha256": "661a1561eb45499f90d8c321d25644f3722b860727218c4b1a4c8cdf573e2df0",
+  "decoderSha256": "70f740953ef4680e33704cbc7486723b877a14c5ffb456d828f50243cdac91cd",
+  "registrationEvidenceSha256": "373798465ca0f6450f48f39973dabd9e7cb1ce4142e1772bc254b99db140f0bf",
+  "iteration": 6000,
+  "geometryChanges": "None. Texture weights only; original streamed Gaussians remain active.",
+  "refinement": {
+    "inputFingerprint": "271ad93040ff1d80532142e582763fb418879de330acc625295a40c45ca6cb04",
+    "sceneSource": "/home/narinder/Documents/OrbitWorks/LangSplat/data/skyfall_JAX_168_batch_v1",
+    "prompts": {
+      "building": [
+        "a building",
+        "an office building",
+        "a skyscraper"
+      ],
+      "roof": [
+        "a building roof",
+        "a rooftop",
+        "the roof of a house"
+      ],
+      "stadium": [
+        "a sports stadium",
+        "stadium grandstands and seating",
+        "a football stadium"
+      ],
+      "houses": [
+        "an aerial view of houses",
+        "a residential house",
+        "the roofs of houses"
+      ],
+      "seating": [
+        "rows of stadium seats",
+        "stadium seating stands",
+        "a grandstand"
+      ],
+      "trees": [
+        "trees",
+        "a tree canopy",
+        "dense green trees"
+      ],
+      "grass": [
+        "a grass lawn",
+        "green grass",
+        "a grassy field"
+      ],
+      "shrubs": [
+        "shrubs and bushes",
+        "green vegetation",
+        "a planted garden"
+      ],
+      "road": [
+        "a road",
+        "a highway",
+        "an asphalt road"
+      ],
+      "parking": [
+        "a parking lot full of cars",
+        "rows of parked cars",
+        "a car park"
+      ],
+      "bridge": [
+        "a highway bridge",
+        "a road bridge",
+        "an elevated highway"
+      ],
+      "pavement": [
+        "concrete pavement",
+        "a paved plaza",
+        "a concrete sidewalk"
+      ],
+      "boats": [
+        "boats in a harbor",
+        "a marina with boats",
+        "boat docks"
+      ],
+      "water": [
+        "a body of water",
+        "a river",
+        "water in a harbor"
+      ],
+      "pond": [
+        "a pond",
+        "a lake",
+        "a water retention pond"
+      ],
+      "soil": [
+        "bare soil",
+        "sand and dirt",
+        "a paved plaza"
+      ]
+    },
+    "method": "Full 512-D LangSplat SAM/CLIP features, multilevel masks, occlusion-tested camera projection, median/upper-quartile multi-view fusion. Uncertain trained latent relevance is capped below the activation ramp where fewer than two views observe a centre. RGB supports semantically plausible vegetation and small nearby mask gaps; no colour-only labels.",
+    "views": [
+      {
+        "image": "JAX_168_006_RGB.png",
+        "visibleGaussianCentres": 62631
+      },
+      {
+        "image": "JAX_168_011_RGB.png",
+        "visibleGaussianCentres": 62437
+      },
+      {
+        "image": "JAX_168_025_RGB.png",
+        "visibleGaussianCentres": 63447
+      },
+      {
+        "image": "JAX_168_026_RGB.png",
+        "visibleGaussianCentres": 64608
+      },
+      {
+        "image": "JAX_168_004_RGB.png",
+        "visibleGaussianCentres": 62089
+      },
+      {
+        "image": "JAX_168_010_RGB.png",
+        "visibleGaussianCentres": 71858
+      },
+      {
+        "image": "JAX_168_021_RGB.png",
+        "visibleGaussianCentres": 66724
+      },
+      {
+        "image": "JAX_168_016_RGB.png",
+        "visibleGaussianCentres": 62696
+      },
+      {
+        "image": "JAX_168_007_RGB.png",
+        "visibleGaussianCentres": 61905
+      },
+      {
+        "image": "JAX_168_022_RGB.png",
+        "visibleGaussianCentres": 62371
+      },
+      {
+        "image": "JAX_168_001_RGB.png",
+        "visibleGaussianCentres": 62508
+      },
+      {
+        "image": "JAX_168_018_RGB.png",
+        "visibleGaussianCentres": 62198
+      }
+    ],
+    "centresWithAtLeastTwoViews": 52532,
+    "totalCentres": 159283,
+    "reviewedStadiumCentres": 0,
+    "reviewAnnotation": null,
+    "evaluationBasis": "All available prepared source views are correction inputs, including prior camera holdouts. Source overlays are diagnostic, not independent accuracy validation."
+  },
+  "policy": {
+    "legacyScoreRamp": null,
+    "queryMarginRamp": null,
+    "minimumOpaqueSupport": 1,
+    "minimumOpacity": 0.25,
+    "minimumAboveStreetMetres": null,
+    "refinedScoreRamp": [
+      0.43,
+      0.75
+    ],
+    "uncertainFallbackMaximum": 0.4
+  }
+}

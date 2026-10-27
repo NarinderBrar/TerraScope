@@ -37,14 +37,16 @@ body {
 }
 
 .app {
-  display: grid;
-  grid-template-columns: 1fr 320px;
+  display: block;
+  position: relative;
   height: 100%;
 }
 
 /* ---- map ---- */
 
 .canvas-wrap {
+  width: 100%;
+  height: 100%;
   position: relative;
   overflow: hidden;
   background: #05070a;
@@ -971,6 +973,19 @@ button.scene.selected {
 .splat-canvas { display: block; width: 100%; height: 100%; touch-action: none; outline-offset: -3px; }
 .splat-controls-overlay { position: absolute; top: 16px; left: 16px; right: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px; background: #101b2be8; border-radius: 10px; }
 .splat-controls-overlay > div { flex: 1; }
+.splat-controls-overlay > .tree-candidates-control { flex: 0 1 280px; }
+.tree-candidates-control p { margin: 6px 0 0; font-size: 12px; line-height: 1.4; }
+.splat-controls-overlay > .building-highlights-control { flex: 0 1 290px; }
+.building-highlights-control p { margin: 6px 0 0; font-size: 12px; line-height: 1.4; }
+.building-highlights-control small { display: block; margin-top: 4px; font-size: 11px; }
+.glow-target { display: inline-flex; align-items: center; gap: 6px; margin: 0 8px 5px 0; font-size: 12px; }
+.glow-target select { width: auto; max-width: 140px; padding: 5px; font-size: 12px; }
+.splat-controls-overlay > .segmented-control { flex: 0 1 290px; }
+.segmented-control small { display: block; margin-top: 4px; font-size: 11px; }
+.segmented-legend { display: flex; flex-wrap: wrap; gap: 5px 10px; margin-top: 8px; }
+.segmented-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.segmented-legend i { width: 9px; height: 9px; border-radius: 2px; }
+.segmented-control p { margin: 5px 0 0; font-size: 12px; line-height: 1.4; }
 .splat-controls-overlay h3 { margin: 0 0 4px; font-size: 15px; }
 .splat-controls-overlay span, .splat-help, .splat-attribution { font-size: 12px; }
 .splat-detail-status { display: flex; align-items: center; gap: 8px; color: #b8d9c2; }
@@ -987,4 +1002,64 @@ button.scene.selected {
 /* Keep the geographic map visible until the matching 3D frame is ready. */
 .splat-canvas { opacity: 0; transition: opacity 320ms ease; }
 .splat-canvas.ready { opacity: 1; }
+.splat-canvas.from-3d { transition: none; }
 @media (prefers-reduced-motion: reduce) { .splat-canvas { transition: none; } }
+
+/* Registered city simulation controls; the canvas remains interactive beside the panel. */
+.urban-lab { position: absolute; top: 112px; right: 16px; bottom: 108px; width: min(370px, calc(100% - 32px)); overflow-y: auto; overscroll-behavior: contain; background: #101b2bf2; border: 1px solid #41566b; border-radius: 10px; padding: 16px; box-sizing: border-box; font-size: 12px; box-shadow: 0 12px 40px #0006; }
+.urban-lab h3 { margin: 0 0 10px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; }
+.urban-lab h3 small { color: #f6ce7a; font-size: 11px; font-weight: 400; }
+.urban-lab p { line-height: 1.5; color: #c2cdd9; margin: 8px 0; }
+.urban-lab a { color: #94daff; }
+.urban-lab fieldset { border: 1px solid #41566b; border-radius: 6px; margin: 14px 0; padding: 10px; min-width: 0; }
+.urban-lab legend { color: #9adbd5; padding: 0 5px; }
+.urban-lab label { display: block; margin: 8px 0; }
+.urban-lab select, .urban-lab input[type=date] { display: block; box-sizing: border-box; width: 100%; max-width: 100%; margin-top: 5px; padding: 6px; background: #17283b; color: #e4edf7; border: 1px solid #52647b; border-radius: 4px; }
+.urban-lab input[type=range] { width: 100%; display: block; }
+.urban-layers { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.urban-layers label { display: flex; align-items: center; gap: 6px; }
+.urban-layers input { width: auto; margin: 0; }
+.urban-lab table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 11px; }
+.urban-lab caption { text-align: left; color: #9adbd5; margin-bottom: 8px; }
+.urban-lab th, .urban-lab td { padding: 7px 3px; border-bottom: 1px solid #344456; text-align: right; }
+.urban-lab th:first-child { text-align: left; }
+.urban-lab details { margin: 14px 0; }
+.urban-lab summary { cursor: pointer; }
+.urban-inspector { border-left: 2px solid #9adbd5; padding-left: 10px; }
+@media (max-width: 720px) { .urban-lab { top: 160px; bottom: 95px; width: min(330px, calc(100% - 32px)); max-height: 60%; } }
+
+/* One map navigation panel; satellite analysis is an optional drawer. */
+.map-controls-panel { position: absolute; top: 16px; right: 16px; z-index: 15; width: 300px; max-width: calc(100% - 32px); max-height: calc(100% - 80px); overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 14px; border: 1px solid #425568; border-radius: 12px; background: #101b2bf2; box-shadow: 0 8px 30px #0005; }
+.map-controls-panel header { display: flex; flex-direction: column; }
+.map-controls-panel header span, .map-orbit-hint { color: #bbcadb; font-size: 12px; margin: 0; }
+.map-view-buttons { display: flex; gap: 8px; }
+.map-view-buttons button { flex: 1; }
+.map-controls-panel [aria-pressed="true"] { outline: 2px solid #78d9ff; }
+.map-controls-panel .urban-tools { position: static; display: flex; flex-wrap: wrap; gap: 8px; padding: 0; pointer-events: auto; }
+.map-controls-panel .urban-prompt { position: static; max-width: 100%; display: flex; gap: 8px; padding: 10px; font-size: 12px; }
+.map-controls-panel .map-mode-toggle { position: static; width: 100%; display: flex; align-items: center; justify-content: center; gap: 6px; }
+.map-controls-panel select { max-width: 100%; }
+.imagery-drawer { position: absolute; top: 16px; bottom: 16px; left: 16px; z-index: 35; width: 340px; max-width: calc(100% - 32px); border: 1px solid #425568; border-radius: 12px; background: #101b2bf7; overflow-y: auto; }
+.imagery-drawer .sidebar { height: auto; border: 0; }
+.imagery-close { display: block; margin: 12px; }
+.map-3d-view { position: absolute; inset: 0; z-index: 4; background: #05070a; }
+.map-3d-view canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.map-3d-status, .map-3d-help { position: absolute; left: 16px; max-width: calc(100% - 32px); padding: 6px 9px; background: #101b2be8; border-radius: 5px; font-size: 12px; pointer-events: none; }
+.map-3d-status { bottom: 76px; }
+.map-3d-help { bottom: 40px; }
+.map3d-active > .hud, .map3d-active > .banner, .map3d-active > .pixel-readout { display: none; }
+@media (max-width: 720px) { .map-controls-panel { top: 8px; right: 8px; width: 260px; max-height: 45%; } .imagery-drawer { top: 8px; bottom: 8px; left: 8px; } }
+
+.map-camera-toggle { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; padding: 9px 12px; border: 1px solid #526b83; border-radius: 8px; background: #15263a; color: #eaf2fc; cursor: pointer; }
+.camera-toggle-track { display: inline-flex; width: 42px; height: 24px; padding: 3px; border-radius: 15px; background: #506174; box-sizing: border-box; }
+.camera-toggle-track > span { width: 18px; height: 18px; border-radius: 50%; background: #eef6ff; transform: translateX(0); transition: transform 180ms ease; }
+.map-camera-toggle[aria-checked="true"] .camera-toggle-track { background: #2788c4; }
+.map-camera-toggle[aria-checked="true"] .camera-toggle-track > span { transform: translateX(18px); }
+.splat-controls-overlay.splat-right-panel { top: 16px; right: 16px; left: auto; width: 300px; max-width: calc(100% - 32px); max-height: calc(100% - 48px); overflow-y: auto; display: flex; flex-direction: column; align-items: stretch; gap: 12px; border: 1px solid #425568; border-radius: 12px; box-shadow: 0 8px 30px #0005; }
+.splat-right-panel > div { flex: none; }
+.splat-right-panel header { display: flex; flex-direction: column; gap: 2px; }
+.splat-right-panel .building-highlights-control { flex: none; }
+.splat-right-panel h3 { line-height: 1.4; }
+.splat-right-panel .splat-detail-status { flex-wrap: wrap; }
+@media (max-width: 720px) { .splat-controls-overlay.splat-right-panel { top: 8px; right: 8px; width: 260px; max-height: 55%; } }
+.splat-right-panel .urban-lab { position: static; width: 100%; max-width: 100%; max-height: none; padding: 0; margin: 0; border: 0; box-shadow: none; overflow: visible; }

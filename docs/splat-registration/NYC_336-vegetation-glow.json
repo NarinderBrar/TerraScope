@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "scene": "NYC_336",
+  "kind": "langsplat-vegetation-glow",
+  "category": "vegetation",
+  "coordinateFrame": "registered-model-local",
+  "sourceSha256": "b01a5df4262b70a64e2f32046544c2f681ca3497804009129e1e54790e0647d0",
+  "asset": "NYC_336-vegetation-glow.bin",
+  "assetSha256": "b023c6250e891d5d4ee0eeea0b48f382c7cc8257e2dacc8f10f3effbf11514a7",
+  "byteLength": 4194304,
+  "gridSize": [
+    256,
+    256,
+    64
+  ],
+  "atlasSize": [
+    2048,
+    2048
+  ],
+  "tilesPerRow": 8,
+  "boundsMin": [
+    -401.8113098144531,
+    -429.6080322265625,
+    -72.46404266357422
+  ],
+  "boundsMax": [
+    423.18603515625,
+    415.916015625,
+    246.47348022460938
+  ],
+  "minimumLocalZ": -30.040467205952616,
+  "fieldVersion": 2,
+  "nonzeroVoxels": 64356,
+  "maximumWeight": 0.6352941176470588,
+  "basis": "Continuous LangSplat vegetation evidence versus competing queries, generic negatives; viewer-adjustable cutoff, spatial smoothing in the original registered frame. No OSM labels.",
+  "limitations": "Approximate spatial transfer to full-detail Gaussians. Building queries remain unvalidated; missed buildings and false matches remain. Not object segmentation.",
+  "checkpointSha256": "b952ac3ec3091edc76addf58f3abcd73172c24a2d4898607558bf0eeb720fbde",
+  "decoderSha256": "8d667371dd475fd8fa3087ca1330b59e5d0f3a86f0f2a5895797b72052a61cd9",
+  "registrationEvidenceSha256": "2b2ec5f60f85339f61a2163df176001046508b52f6dfb89694b81843cd4ec0be",
+  "iteration": 6000,
+  "geometryChanges": "None. Texture weights only; original streamed Gaussians remain active.",
+  "policy": {
+    "buildingScoreRamp": [
+      0.3,
+      0.65
+    ],
+    "queryMarginRamp": [
+      -0.02,
+      0.16
+    ],
+    "minimumOpaqueSupport": 4,
+    "minimumOpacity": 0.7,
+    "minimumAboveStreetMetres": 0.2
+  }
+}

@@ -1,17 +1,23 @@
 import {
-  Asset, BoundingBox, Entity, RESOLUTION_AUTO, Quat, Vec3, createGraphicsDevice,
+  Asset, BoundingBox, Entity, RESOLUTION_AUTO, Mat4, Quat, Vec3, createGraphicsDevice,
   type GraphicsDevice,
 } from 'playcanvas';
 import { SplatChunkLoader } from './SplatChunkLoader';
 import type { SplatStreamStatus } from './sogChunk';
-import { loadStreamingIndex, type StreamedSplatResource } from './streamingIndex';
+import { fetchStreamingIndex, loadStreamingIndex, type StreamedSplatResource } from './streamingIndex';
 import { createGroundMap, type GroundMapLayer, type GroundMapStatus } from './GroundMapLayer';
 import { mapViewFrame } from './mapViewFrame';
 import { PCApp } from './supersplat/pc-app';
 import { Camera } from './supersplat/camera';
 import type { GeoBounds, SplatSceneMeta } from '../data/splatScenes';
+import { createUrbanOverlay } from '../urban/UrbanOverlay';
+import type { UrbanOverlayState } from '../urban/types';
+import { createLangSplatBuildingGlow, type GlowCategory } from './LangSplatBuildingGlow';
+import { captureEarthView, captureMapView, EARTH_RADIUS, globeBlend, type GeographicView } from '../map/navigation3D';
+import { createOrbitEarth } from '../map/OrbitEarth';
+import { metricFrame } from '../urban/model';
 
-export interface SplatSession { dispose(): void; reset(): void; setMapVisible(visible: boolean): void; reloadMap(): void; retryDetail(): void }
+export interface SplatSession { dispose(): void; reset(): void; setMapVisible(visible: boolean): void; reloadMap(): void; retryDetail(): void; setUrbanState?(state: UrbanOverlayState | null): void; setBuildingsEnabled?(enabled: boolean): Promise<void>; setGlowCategory?(category: GlowCategory): Promise<void>; getMapView?(): GeographicView | null }
 
 export async function createSplatSession(
   canvas: HTMLCanvasElement,
@@ -22,24 +28,35 @@ export async function createSplatSession(
   onMapStatus: (status: GroundMapStatus) => void,
   entryBounds: GeoBounds,
   onStreamStatus: (status: SplatStreamStatus) => void = () => {},
+  entryOrientation?: GeographicView['orientation'],
 ): Promise<SplatSession> {
   signal.throwIfAborted();
+  onProgress('Starting graphics and loading the 3D tile index…');
+  const indexController = new AbortController();
+  const index = fetchStreamingIndex(meta.lodUrl, AbortSignal.any([signal, indexController.signal]));
+  // An index failure can precede GPU initialization; retain it for the await below.
+  void index.catch(() => {});
   // SuperSplat's PCApp setup, using the engine's native SOG asset loader. Select
   // the display GPU consistently with TerraScope's map on hybrid-GPU laptops.
   const device: GraphicsDevice = await createGraphicsDevice(canvas, {
     deviceTypes: ['webgpu', 'webgl2'], antialias: false, depth: true, stencil: false,
     xrCompatible: false, powerPreference: 'low-power',
-  });
+  }).catch((error: unknown) => { indexController.abort(); throw error; });
   let app: PCApp | undefined;
   let camera: Camera | undefined;
   let asset: Asset | undefined;
   let observer: ResizeObserver | undefined;
   let groundMap: GroundMapLayer | undefined;
   let chunks: SplatChunkLoader | undefined;
+  let buildingGlow: ReturnType<typeof createLangSplatBuildingGlow> | undefined;
+  let earth: ReturnType<typeof createOrbitEarth> | undefined;
   let disposed = false;
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
+    indexController.abort();
+    buildingGlow?.dispose();
+    earth?.dispose();
     signal.removeEventListener('abort', dispose);
     observer?.disconnect();
     groundMap?.dispose();
@@ -73,7 +90,7 @@ export async function createSplatSession(
     resize();
 
     onProgress('Loading the 3D tile index…');
-    asset = await loadStreamingIndex(app, meta.id, meta.lodUrl, signal);
+    asset = await loadStreamingIndex(app, meta.id, meta.lodUrl, signal, index);
     signal.throwIfAborted();
     const resource = asset.resource as unknown as StreamedSplatResource;
     if (!resource?.octree || !resource.aabb) throw new Error('The city model did not provide a streaming tile index.');
@@ -88,23 +105,47 @@ export async function createSplatSession(
     app.scene.gsplat.lodUnderfillLimit = 2;
     app.scene.gsplat.splatBudget = 2_000_000;
     app.scene.gsplat.cooldownTicks = 60;
-    const modelRoot = new Entity('Skyfall model');
+    const modelRoot = new Entity('Skyfall model', app);
     // SuperSplat controls use Y-up. Rotate the complete Z-up data frame once,
     // including the ground map, so the model and imagery stay in one frame.
     modelRoot.setLocalRotation(new Quat().setFromDirections(new Vec3(...meta.upVector), Vec3.UP));
     app.root.addChild(modelRoot);
-    const model = new Entity(meta.id);
+    const model = new Entity(meta.id, app);
     model.addComponent('gsplat', { asset, unified: true, lodRangeMin: 0, lodRangeMax: 2, lodBaseDistance: 300, lodMultiplier: 2 });
     modelRoot.addChild(model);
     const bounds = new BoundingBox();
     bounds.setFromTransformedAabb(resource.aabb, modelRoot.getWorldTransform());
-    camera.frame(bounds, mapViewFrame(entryBounds, meta.georeference));
+    camera.frame(bounds, mapViewFrame(entryBounds, meta.georeference, entryOrientation));
+    const metresPerUnit = metricFrame(meta).metresPerUnit;
+    camera.maxDistance = 500000000 / metresPerUnit / camera.sceneRadius;
+    camera.minDistance = .1 / metresPerUnit / camera.sceneRadius; camera.zoomFloor = 0;
     groundMap = createGroundMap(app, modelRoot, meta.georeference, camera, onMapStatus);
+    earth = createOrbitEarth(app, meta.georeference.origin, meta.georeference);
+    let planetBlend = 0, planetOffset = 0, mapVisible = true, groundVisible = true, tilesReady = false;
+    const urban = createUrbanOverlay(app, modelRoot, meta);
+    buildingGlow = createLangSplatBuildingGlow(app, modelRoot, model, meta.id, indexController.signal,
+      [resource.aabb.center.z - resource.aabb.halfExtents.z, resource.aabb.center.z + resource.aabb.halfExtents.z], metresPerUnit);
     const reloadMap = (): void => {
       if (disposed) return;
       groundMap?.retry();
     };
-    app.on('update', (delta: number) => { camera?.update(delta); groundMap?.update(); });
+    app.on('update', (delta: number) => {
+      if (!camera) return;
+      camera.update(delta);
+      const distance = camera.distance * camera.sceneRadius / camera.fovFactor * metresPerUnit;
+      planetBlend = globeBlend(distance);
+      if (distance > 30000) earth?.prepare();
+      const offset = -EARTH_RADIUS / metresPerUnit * globeBlend(distance / 16);
+      if (Math.abs(offset - planetOffset) > .01) {
+        camera.setFocalPoint(camera.focalPoint.clone().add(new Vec3(0, offset - planetOffset, 0))); planetOffset = offset;
+      }
+      earth?.update(mapVisible ? planetBlend : 0); groundMap?.setOpacity?.(1 - planetBlend);
+      model.enabled = !tilesReady || planetBlend < 1;
+      const visible = mapVisible && planetBlend < 1;
+      if (visible !== groundVisible) { groundVisible = visible; groundMap?.setVisible(visible); }
+      if (visible) groundMap?.update();
+      urban.update(delta); buildingGlow?.update(delta);
+    });
     app.start();
     let firstFrameTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -113,7 +154,9 @@ export async function createSplatSession(
       })]);
     } finally { clearTimeout(firstFrameTimeout); }
     signal.throwIfAborted();
+    tilesReady = true;
     // The map and coarse chunks render before refinement continues in the background.
+    buildingGlow.startReveal();
     await new Promise<void>((resolve, reject) => {
       const clean = () => { app!.off('frameend', done); signal.removeEventListener('abort', abort); };
       const done = () => { clean(); resolve(); };
@@ -124,10 +167,16 @@ export async function createSplatSession(
     signal.throwIfAborted();
     return {
       dispose,
-      reset: () => { if (!disposed) camera?.reset(); },
+      reset: () => { if (!disposed) { planetOffset = 0; camera?.reset(); } },
+      getMapView: () => !disposed && camera ? planetBlend > .5 && earth
+        ? captureEarthView(camera, meta.georeference.origin, canvas.clientHeight, new Mat4().copy(earth.getWorldTransform()).invert())
+        : captureMapView(camera, modelRoot, meta.georeference, canvas.clientHeight) : null,
       reloadMap,
       retryDetail: () => chunks?.retry(),
-      setMapVisible: (visible) => { groundMap?.setVisible(visible); },
+      setUrbanState: (state) => { if (!disposed) urban.setState(state); },
+      setBuildingsEnabled: (enabled) => buildingGlow?.setEnabled(enabled) ?? Promise.resolve(),
+      setGlowCategory: (category) => buildingGlow?.setCategory(category) ?? Promise.resolve(),
+      setMapVisible: (visible) => { mapVisible = visible; groundVisible = visible && planetBlend < 1; groundMap?.setVisible(groundVisible); },
     };
   } catch (error) { dispose(); throw error; }
 }

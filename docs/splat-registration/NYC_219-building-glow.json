@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "scene": "NYC_219",
+  "kind": "langsplat-building-glow",
+  "category": "buildings",
+  "coordinateFrame": "registered-model-local",
+  "sourceSha256": "03a160bba8c39cf6c51b36a7dc3fc9b7e930635a741ddfe55e0c8556f0a49e6b",
+  "asset": "NYC_219-building-glow.bin",
+  "assetSha256": "992b471c298f9d885c5612daef7d7a22bf8558fef5145fd25170b8b05aeef672",
+  "byteLength": 4194304,
+  "gridSize": [
+    256,
+    256,
+    64
+  ],
+  "atlasSize": [
+    2048,
+    2048
+  ],
+  "tilesPerRow": 8,
+  "boundsMin": [
+    -426.28631591796875,
+    -428.51641845703125,
+    -57.06561279296875
+  ],
+  "boundsMax": [
+    420.2062683105469,
+    418.89691162109375,
+    115.0054702758789
+  ],
+  "minimumLocalZ": -26.73008893257939,
+  "fieldVersion": 2,
+  "nonzeroVoxels": 351884,
+  "maximumWeight": 0.7843137254901961,
+  "basis": "Continuous LangSplat buildings evidence versus competing queries, generic negatives; viewer-adjustable cutoff, spatial smoothing in the original registered frame. No OSM labels.",
+  "limitations": "Approximate spatial transfer to full-detail Gaussians. Building queries remain unvalidated; missed buildings and false matches remain. Not object segmentation.",
+  "checkpointSha256": "5a7b3acd0e786e8a89fa2f52c98050e7dcffd595ae41ea787c28fcc3cf90237e",
+  "decoderSha256": "d38b7efc4d062c1c10d7e0dd7180ae25a56d469a92c728f33958823ff032b0cd",
+  "registrationEvidenceSha256": "d0bea97768f632557a4fc5efb9bcf3f6d2ce5177d8e7e618fae475a55efb7b88",
+  "iteration": 6000,
+  "geometryChanges": "None. Texture weights only; original streamed Gaussians remain active.",
+  "policy": {
+    "buildingScoreRamp": [
+      0.3,
+      0.65
+    ],
+    "queryMarginRamp": [
+      -0.02,
+      0.16
+    ],
+    "minimumOpaqueSupport": 4,
+    "minimumOpacity": 0.7,
+    "minimumAboveStreetMetres": 2
+  }
+}

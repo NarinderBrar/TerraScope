@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "scene": "JAX_260",
+  "kind": "langsplat-vegetation-glow",
+  "category": "vegetation",
+  "coordinateFrame": "registered-model-local",
+  "sourceSha256": "d9c11db30dadea0fab2d90c90d4985392921e891df553f31dfbdcb55f4a767ea",
+  "asset": "JAX_260-vegetation-glow.bin",
+  "assetSha256": "b107594a887cc2661650dbabd0fb9e726148a524415a904642266d8cd0ebfc02",
+  "byteLength": 16777216,
+  "gridSize": [
+    512,
+    512,
+    64
+  ],
+  "atlasSize": [
+    4096,
+    4096
+  ],
+  "tilesPerRow": 8,
+  "boundsMin": [
+    -436.4670104980469,
+    -406.2502136230469,
+    -36.500465393066406
+  ],
+  "boundsMax": [
+    416.86328125,
+    385.8548583984375,
+    147.3372344970703
+  ],
+  "minimumLocalZ": -37.500465393066406,
+  "fieldVersion": 3,
+  "evidenceMode": "multiview",
+  "nonzeroVoxels": 142060,
+  "maximumWeight": 1.0,
+  "basis": "Full 512-D LangSplat SAM/CLIP features, multilevel masks, occlusion-tested camera projection, median/upper-quartile multi-view fusion. Uncertain trained latent relevance is capped below the activation ramp where fewer than two views observe a centre. RGB supports semantically plausible vegetation and small nearby mask gaps; no colour-only labels.Fixed viewer cutoff; spatial smoothing in the original registered frame. No OSM labels.",
+  "limitations": "Approximate spatial transfer to full-detail Gaussians. Building queries remain unvalidated; missed buildings and false matches remain. Not object segmentation.",
+  "checkpointSha256": "9c98764c1f175d7171243756004bde2d8990c689f13ac942d9b6bb41ad4045ae",
+  "decoderSha256": "c3b653197a5182d899cfd8ebf7d6c01165bdf7601d07a3dac374fac3fd4eadd2",
+  "registrationEvidenceSha256": "d96c346edcd30062e7d1db75702e3dcd038a4a59135946327dd22b3305de6fca",
+  "iteration": 6000,
+  "geometryChanges": "None. Texture weights only; original streamed Gaussians remain active.",
+  "refinement": {
+    "inputFingerprint": "7b13339cd94a98e04086ca86399072fb922675c48201112c3c1b5bcd335d4ff8",
+    "sceneSource": "/home/narinder/Documents/OrbitWorks/LangSplat/data/skyfall_JAX_260_quality_v2",
+    "prompts": {
+      "building": [
+        "a building",
+        "an office building",
+        "a skyscraper"
+      ],
+      "roof": [
+        "a building roof",
+        "a rooftop",
+        "the roof of a house"
+      ],
+      "stadium": [
+        "a sports stadium",
+        "stadium grandstands and seating",
+        "a football stadium"
+      ],
+      "houses": [
+        "an aerial view of houses",
+        "a residential house",
+        "the roofs of houses"
+      ],
+      "seating": [
+        "rows of stadium seats",
+        "stadium seating stands",
+        "a grandstand"
+      ],
+      "trees": [
+        "trees",
+        "a tree canopy",
+        "dense green trees"
+      ],
+      "grass": [
+        "a grass lawn",
+        "green grass",
+        "a grassy field"
+      ],
+      "shrubs": [
+        "shrubs and bushes",
+        "green vegetation",
+        "a planted garden"
+      ],
+      "road": [
+        "a road",
+        "a highway",
+        "an asphalt road"
+      ],
+      "parking": [
+        "a parking lot full of cars",
+        "rows of parked cars",
+        "a car park"
+      ],
+      "bridge": [
+        "a highway bridge",
+        "a road bridge",
+        "an elevated highway"
+      ],
+      "pavement": [
+        "concrete pavement",
+        "a paved plaza",
+        "a concrete sidewalk"
+      ],
+      "boats": [
+        "boats in a harbor",
+        "a marina with boats",
+        "boat docks"
+      ],
+      "water": [
+        "a body of water",
+        "a river",
+        "water in a harbor"
+      ],
+      "pond": [
+        "a pond",
+        "a lake",
+        "a water retention pond"
+      ],
+      "soil": [
+        "bare soil",
+        "sand and dirt",
+        "a paved plaza"
+      ]
+    },
+    "method": "Full 512-D LangSplat SAM/CLIP features, multilevel masks, occlusion-tested camera projection, median/upper-quartile multi-view fusion. Uncertain trained latent relevance is capped below the activation ramp where fewer than two views observe a centre. RGB supports semantically plausible vegetation and small nearby mask gaps; no colour-only labels.",
+    "views": [
+      {
+        "image": "JAX_260_018_RGB.png",
+        "visibleGaussianCentres": 76654
+      },
+      {
+        "image": "JAX_260_014_RGB.png",
+        "visibleGaussianCentres": 88805
+      },
+      {
+        "image": "JAX_260_012_RGB.png",
+        "visibleGaussianCentres": 84924
+      },
+      {
+        "image": "JAX_260_016_RGB.png",
+        "visibleGaussianCentres": 83724
+      },
+      {
+        "image": "JAX_260_022_RGB.png",
+        "visibleGaussianCentres": 78623
+      },
+      {
+        "image": "JAX_260_001_RGB.png",
+        "visibleGaussianCentres": 86984
+      },
+      {
+        "image": "JAX_260_005_RGB.png",
+        "visibleGaussianCentres": 78917
+      },
+      {
+        "image": "JAX_260_015_RGB.png",
+        "visibleGaussianCentres": 82365
+      },
+      {
+        "image": "JAX_260_009_RGB.png",
+        "visibleGaussianCentres": 88624
+      },
+      {
+        "image": "JAX_260_011_RGB.png",
+        "visibleGaussianCentres": 77404
+      },
+      {
+        "image": "JAX_260_026_RGB.png",
+        "visibleGaussianCentres": 87240
+      },
+      {
+        "image": "JAX_260_007_RGB.png",
+        "visibleGaussianCentres": 79272
+      },
+      {
+        "image": "JAX_260_004_RGB.png",
+        "visibleGaussianCentres": 75738
+      },
+      {
+        "image": "JAX_260_006_RGB.png",
+        "visibleGaussianCentres": 81738
+      },
+      {
+        "image": "JAX_260_013_RGB.png",
+        "visibleGaussianCentres": 85832
+      }
+    ],
+    "centresWithAtLeastTwoViews": 105669,
+    "totalCentres": 136489,
+    "reviewedStadiumCentres": 0,
+    "reviewAnnotation": null,
+    "evaluationBasis": "All available prepared source views are correction inputs, including prior camera holdouts. Source overlays are diagnostic, not independent accuracy validation."
+  },
+  "policy": {
+    "legacyScoreRamp": null,
+    "queryMarginRamp": null,
+    "minimumOpaqueSupport": 1,
+    "minimumOpacity": 0.25,
+    "minimumAboveStreetMetres": null,
+    "refinedScoreRamp": [
+      0.43,
+      0.75
+    ],
+    "uncertainFallbackMaximum": 0.4
+  }
+}

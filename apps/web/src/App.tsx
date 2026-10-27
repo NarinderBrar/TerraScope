@@ -1,12 +1,9 @@
 /**
  * The application shell.
  *
- * Two modes:
- * 1. Explore mode: satellite basemap with place search, free pan and zoom.
- * 2. Timeline / Swipe mode: user selects a date range, the app finds 2 scenes
- *    closest to those dates, and provides an interactive swipe divider to compare
- *    both maps side by side (e.g. comparing vegetation, NDVI, or natural colour)
- *    based on the right-side panel settings.
+ * The explorer shares a geographic camera between 2D, local 3D and zoom-out
+ * Earth views, with registered splat scenes opened from geographic footprints.
+ * Legacy satellite analysis helpers are retained below but not mounted here.
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
@@ -27,9 +24,10 @@ import { SplatFootprints } from './map/SplatFootprints';
 import { hitSplatFootprint } from './map/splatFootprints';
 import { MAX_ZOOM, MIN_ZOOM } from './map/MapCamera';
 import { PlaceSearch, zoomForKind, type Place } from './ui/PlaceSearch';
-import { GlobeView } from './globe/GlobeView';
+import { Map3DView } from './map/Map3DView';
 import { SplatView } from './splat/SplatView';
-import { SKYFALL_SCENES, findIntersectingScenes, selectionBounds, type GeoBounds, type ScreenPoint, type SplatSceneMeta } from './data/splatScenes';
+import { preloadSplatViewer } from './splat/preload';
+import { SKYFALL_SCENES, selectionBounds, type GeoBounds, type ScreenPoint, type SplatSceneMeta } from './data/splatScenes';
 import {
   BAND_LABELS,
   deltaLegend,
@@ -37,6 +35,7 @@ import {
   rampCssGradient,
   type RampBand,
 } from './ui/ramps';
+import type { GeographicView } from './map/navigation3D';
 import type { RenderLayer, RenderSettings } from './gpu/RasterRenderer';
 import type { DatasetConfig, RegionStatsResponse } from '@terrascope/contracts';
 
@@ -67,7 +66,6 @@ export function App(): React.JSX.Element {
   const initial = useRef(readSharedState());
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [scene, setScene] = useState<MapScene | null>(null);
-  const [dates, setDates] = useState<Dates>(initial.current.dates);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -87,7 +85,6 @@ export function App(): React.JSX.Element {
   return (
     <div className="app">
       <CanvasAndScene canvasRef={canvasRef} scene={scene} />
-      <Sidebar scene={scene} dates={dates} onDatesChange={setDates} />
     </div>
   );
 }
@@ -107,16 +104,23 @@ export function CanvasAndScene({
   const containerRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
   const [inspection, setInspection] = useState<PixelInspection | null>(null);
-  const [globeMode, setGlobeMode] = useState(false);
+  const [map3DEntry, setMap3DEntry] = useState<{ bounds: GeoBounds; center: { lon: number; lat: number }; orbit: { x: number; y: number }; orientation?: GeographicView['orientation'] } | null>(null);
+  const last3DView = useRef<GeographicView | null>(null);
+  const orbitDrag = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const lastInspect = useRef(0);
   const [splatScene, setSplatScene] = useState<SplatSceneMeta | null>(null);
-  const [preferredSplatId, setPreferredSplatId] = useState('');
   const [showFootprints, setShowFootprints] = useState(false);
   const [hoveredSplat, setHoveredSplat] = useState<SplatSceneMeta | null>(null);
   const footprintPress = useRef<{ pointerId: number; x: number; y: number; scene: SplatSceneMeta } | null>(null);
   const [splatEntryBounds, setSplatEntryBounds] = useState<GeoBounds | null>(null);
+  const [splatEntryOrientation, setSplatEntryOrientation] = useState<GeographicView['orientation']>();
+  const [returningToMap, setReturningToMap] = useState(false);
+  const finish3DHandoff = useCallback(() => { if (!returningToMap) setMap3DEntry(null); }, [returningToMap]);
+  const finishMapReturn = useCallback(() => {
+    if (returningToMap) { setSplatScene(null); setReturningToMap(false); }
+  }, [returningToMap]);
   const [markMode, setMarkMode] = useState(false);
-  const [markedBounds, setMarkedBounds] = useState<GeoBounds | null>(null);
+  const [, setMarkedBounds] = useState<GeoBounds | null>(null);
   const [aoiSelection, setAoiSelection] = useState<{ start: ScreenPoint; current: ScreenPoint } | null>(null);
   const marquee = useRef<{ pointerId: number; start: ScreenPoint; current: ScreenPoint } | null>(null);
   const selectionCamera = useRef<MapScene['camera'] | null>(null);
@@ -141,11 +145,16 @@ export function CanvasAndScene({
     setMarkedBounds(null);
     setAoiSelection(null);
     setMarkMode(false);
-  }, [compare.active, globeMode]);
+  }, [compare.active, !!map3DEntry]);
 
   useEffect(() => {
     const cancelSelection = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape' || splatScene) return;
+      if (map3DEntry) {
+        orbitDrag.current = null;
+        if (last3DView.current) scene?.setView(last3DView.current.center, last3DView.current.zoom);
+        setMap3DEntry(null);
+      }
       footprintPress.current = null;
       setHoveredSplat(null);
       marquee.current = null;
@@ -156,24 +165,28 @@ export function CanvasAndScene({
     };
     window.addEventListener('keydown', cancelSelection);
     return () => window.removeEventListener('keydown', cancelSelection);
-  }, [splatScene]);
+  }, [splatScene, map3DEntry, scene]);
 
   const localPoint = (event: React.PointerEvent<HTMLCanvasElement>): ScreenPoint => {
     const rect = event.currentTarget.getBoundingClientRect();
     return { x: Math.max(0, Math.min(rect.width, event.clientX - rect.left)), y: Math.max(0, Math.min(rect.height, event.clientY - rect.top)) };
   };
 
-  const openSplatScene = (target: SplatSceneMeta): void => {
+  const openSplatScene = (target: SplatSceneMeta, view?: GeographicView): void => {
     if (!scene) return;
+    preloadSplatViewer();
     // Use the live map viewport, preserving the geographic entry frame.
     setSplatEntryBounds(scene.viewBounds());
+    setSplatEntryOrientation(view?.orientation);
+    // Retain the live 3D canvas beneath the loading viewer until its first frame.
+    if (!view) setMap3DEntry(null);
     setSplatScene(target);
     setHoveredSplat(null);
     footprintPress.current = null;
   };
 
   const footprintAt = (event: React.PointerEvent<HTMLCanvasElement>): SplatSceneMeta | undefined => {
-    if (!showFootprints || !scene || compare.active || globeMode || splatScene || markMode || event.shiftKey) return undefined;
+    if (!showFootprints || !scene || compare.active || splatScene || markMode || event.shiftKey) return undefined;
     const rect = event.currentTarget.getBoundingClientRect();
     return hitSplatFootprint(scene.camera, { width: rect.width, height: rect.height, dpr: 1 }, localPoint(event));
   };
@@ -198,10 +211,19 @@ export function CanvasAndScene({
   }, [compare.active]);
 
   const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    if (event.isPrimary && (event.button === 1 || event.button === 2) && scene && !compare.active && !splatScene) {
+      event.preventDefault();
+      orbitDrag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
     if (event.button !== 0 || !event.isPrimary) return;
     footprintPress.current = null;
     const target = footprintAt(event);
-    if (target) footprintPress.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, scene: target };
+    if (target) {
+      preloadSplatViewer();
+      footprintPress.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, scene: target };
+    }
     setHoveredSplat(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     if (!compare.active && (event.shiftKey || markMode)) {
@@ -217,6 +239,16 @@ export function CanvasAndScene({
 
   const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>): void => {
     if (!event.isPrimary) return;
+    const orbiting = orbitDrag.current;
+    if (orbiting && scene && orbiting.pointerId === event.pointerId) {
+      const orbit = { x: event.clientX - orbiting.x, y: event.clientY - orbiting.y };
+      if (Math.hypot(orbit.x, orbit.y) > 4) {
+        if (!map3DEntry) last3DView.current = { center: { ...scene.camera.center }, zoom: scene.camera.zoom };
+        setMap3DEntry(current => current ? { ...current, orbit }
+          : { bounds: scene.viewBounds(), center: { ...scene.camera.center }, orbit });
+      }
+      return;
+    }
     const press = footprintPress.current;
     if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 5) footprintPress.current = null;
     const start = drag.current;
@@ -232,7 +264,9 @@ export function CanvasAndScene({
       drag.current = { x: event.clientX, y: event.clientY };
       return;
     }
-    setHoveredSplat(footprintAt(event) ?? null);
+    const target = footprintAt(event);
+    if (target && target.id !== hoveredSplat?.id) preloadSplatViewer();
+    setHoveredSplat(target ?? null);
     if (!compare.active) return;
     const now = performance.now();
     if (now - lastInspect.current < 80) return;
@@ -243,6 +277,11 @@ export function CanvasAndScene({
 
   const endDrag = (event: React.PointerEvent<HTMLCanvasElement>): void => {
     if (!event.isPrimary) return;
+    if (orbitDrag.current?.pointerId === event.pointerId) {
+      orbitDrag.current = null;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      return;
+    }
     const selection = marquee.current;
     if (selection && selection.pointerId !== event.pointerId) return;
     const press = footprintPress.current;
@@ -272,15 +311,13 @@ export function CanvasAndScene({
     scene.zoomAroundPixels(event.deltaY, event.clientX - rect.left, event.clientY - rect.top);
   };
 
-  const explorer2d = !compare.active && !globeMode && !splatScene;
-  const detectedScenes = explorer2d && scene ? findIntersectingScenes(markedBounds ?? scene.viewBounds()) : [];
-  const detectedScene = detectedScenes.find((candidate) => candidate.id === preferredSplatId) ?? detectedScenes[0];
+  const explorer2d = !compare.active && !splatScene && !map3DEntry;
   const isDifference = settings?.layer === 'difference';
-  const showSwipeSeam = compare.active && !isDifference && settings?.swipeEnabled;
+  const showSwipeSeam = compare.active && !map3DEntry && !isDifference && settings?.swipeEnabled;
 
   return (
-    <div className={`canvas-wrap${splatScene ? ' splat-active' : ''}`} ref={containerRef}>
-      <div className={`map-view-2d${globeMode ? ' inactive' : ''}`}>
+    <div className={`canvas-wrap${splatScene ? ' splat-active' : ''}${map3DEntry ? ' map3d-active' : ''}`} ref={containerRef}>
+      <div className={`map-view-2d${map3DEntry || (splatScene && splatEntryOrientation) ? ' inactive' : ''}`}>
         {scene && <Basemap scene={scene} />}
         <canvas
           ref={canvasRef}
@@ -293,6 +330,7 @@ export function CanvasAndScene({
           onLostPointerCapture={endDrag}
           onPointerLeave={() => setHoveredSplat(null)}
           onWheel={onWheel}
+          onContextMenu={event => event.preventDefault()}
         />
         {explorer2d && showFootprints && scene && <SplatFootprints view={scene.view} hoveredId={hoveredSplat?.id ?? null} onOpen={openSplatScene} />}
         {aoiSelection && explorer2d && <div className="aoi-marquee" aria-hidden="true" style={{
@@ -302,59 +340,59 @@ export function CanvasAndScene({
           height: Math.abs(aoiSelection.current.y - aoiSelection.start.y),
         }} />}
       </div>
-      {splatScene && <SplatView key={splatScene.id} active sceneMeta={splatScene} entryBounds={splatEntryBounds!} onClose={() => setSplatScene(null)} />}
-      {explorer2d && <div className="urban-tools">
-        <button type="button" className="secondary" aria-pressed={markMode} onClick={() => {
-          setMarkMode((value) => !value); setMarkedBounds(null); setAoiSelection(null);
-        }}>Mark Area</button>
-        <span>or Shift + drag</span>
-        <select className="urban-scene-select" aria-label="Choose 3D scene" value="" onChange={(event) => {
-          const target = SKYFALL_SCENES.find((candidate) => candidate.id === event.target.value);
-          if (!target) return;
-          setPreferredSplatId(target.id);
-          setMarkedBounds(null); setAoiSelection(null); scene?.fitBounds(target.bounds);
+      {map3DEntry && <Map3DView bounds={map3DEntry.bounds} center={map3DEntry.center} orbit={map3DEntry.orbit} orientation={map3DEntry.orientation} showFootprints={showFootprints} onReady={finishMapReturn}
+        onViewChange={view => { last3DView.current = view; }}
+        onOpenFootprint={(target, view) => { scene?.setView(view.center, view.zoom); openSplatScene(target, view); }} />}
+      {splatScene && <SplatView key={splatScene.id} active sceneMeta={splatScene} entryBounds={splatEntryBounds!} entryOrientation={splatEntryOrientation} onReady={finish3DHandoff} onClose={(view, destination = 'map') => {
+        if (returningToMap) return;
+        if (view) scene?.setView(view.center, view.zoom);
+        if (destination === '2d') {
+          setMap3DEntry(null); setSplatScene(null);
+        } else if (!view && map3DEntry) {
+          // Loading was cancelled: the original live map still has its camera.
+          setSplatScene(null);
+        } else if (scene) {
+          const current = view ?? { center: scene.camera.center, zoom: scene.camera.zoom, orientation: splatEntryOrientation };
+          last3DView.current = current;
+          setMap3DEntry({ bounds: scene.viewBounds(), center: current.center, orbit: { x: 0, y: 0 }, orientation: current.orientation });
+          setReturningToMap(true);
+        }
+      }} />}
+      {!splatScene && <aside className="map-controls-panel" aria-label="Map controls">
+        <header><strong>TerraScope</strong><span>Map &amp; 3D explorer</span></header>
+        {scene && <PlaceSearch near={camera.center} onPick={place => {
+          setMap3DEntry(null);
+          if (place.bounds) scene.fitBounds(place.bounds);
+          else scene.setView({ lon: place.lon, lat: place.lat }, zoomForKind(place.kind));
+        }} />}
+        <button type="button" className="map-camera-toggle" role="switch" aria-label="3D view" aria-checked={!!map3DEntry}
+          disabled={!scene} onClick={() => {
+            if (!scene) return;
+            if (map3DEntry) {
+              if (last3DView.current) scene.setView(last3DView.current.center, last3DView.current.zoom);
+              setMap3DEntry(null);
+            } else {
+              last3DView.current = { center: { ...scene.camera.center }, zoom: scene.camera.zoom };
+              setMap3DEntry({ bounds: scene.viewBounds(), center: { ...scene.camera.center }, orbit: { x: 0, y: 0 } });
+            }
+          }}><span>2D</span><span className="camera-toggle-track"><span /></span><span>3D</span></button>
+        <p className="map-orbit-hint">Right-drag or middle-drag to orbit.</p>
+        <select className="urban-scene-select" aria-label="Choose 3D scene" value="" onFocus={preloadSplatViewer} onChange={event => {
+          const target = SKYFALL_SCENES.find(candidate => candidate.id === event.target.value);
+          if (!target || !scene) return;
+          scene.fitBounds(target.bounds); openSplatScene(target);
         }}>
           <option value="" disabled>Choose 3D scene…</option>
-          {SKYFALL_SCENES.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
+          {SKYFALL_SCENES.map(candidate => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
         </select>
-        {markedBounds && <button type="button" className="secondary" onClick={() => { setMarkedBounds(null); setAoiSelection(null); }}>Clear area</button>}
-      </div>}
-      {explorer2d && (detectedScene || markedBounds) && <div className="urban-prompt" role="status">
-        {detectedScene ? <>
-          {detectedScenes.length > 1 ? <select className="urban-scene-select" aria-label="3D scenes in this area" value={detectedScene.id} onChange={(event) => setPreferredSplatId(event.target.value)}>
-            {detectedScenes.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
-          </select> : <span>{detectedScene.name} · 3D scene detected</span>}
-          <button type="button" className="primary" onClick={() => openSplatScene(detectedScene)}>Switch to 3D Urban View</button>
-        </> : <span>No aligned Skyfall 3D scene in this area. Browse Choose 3D scene.</span>}
-      </div>}
-      {scene && settings && (
-        <GlobeView
-          active={globeMode && !splatScene}
-          client={scene.client}
-          context={scene.gpuContext}
-          sceneA={compare.active ? compare.a : null}
-          sceneB={compare.active ? compare.b : null}
-          settings={settings}
-          center={camera.center}
-        />
-      )}
 
       <button
-        type="button"
-        className="map-mode-toggle"
-        hidden={!!splatScene}
-        aria-pressed={globeMode}
-        onClick={() => setGlobeMode((current) => !current)}
-      >
-        {globeMode ? '2D map' : '3D globe'}
-      </button>
-
-      {explorer2d && <button
         type="button"
         className="map-mode-toggle footprints-toggle"
         aria-pressed={showFootprints}
         aria-label="3D Footprints"
-        title={showFootprints ? 'Hide 3D coverage' : 'Show 3D coverage · click a green area to open'}
+        title={showFootprints ? 'Hide 3D coverage'
+          : map3DEntry ? 'Show registered 3D scene boundaries' : 'Show 3D coverage · click a green area to open'}
         disabled={!scene}
         onClick={() => {
           setShowFootprints((current) => !current);
@@ -366,7 +404,9 @@ export function CanvasAndScene({
           <path d="m12 3 9 5v8l-9 5-9-5V8l9-5Zm0 10 9-5M12 13 3 8m9 5v8" />
         </svg>
         3D Footprints
-      </button>}
+      </button>
+      </aside>}
+
 
       {status.phase === 'error' && (
         <div className="banner error">
@@ -379,7 +419,7 @@ export function CanvasAndScene({
       )}
 
       {/* Floating date badges on map during comparison */}
-      {compare.active && compare.a && compare.b && (
+      {compare.active && !map3DEntry && compare.a && compare.b && (
         <>
           <div className="swipe-map-badge left">
             <span className="badge-tag">◀ Left Scene (Date A)</span>
@@ -523,7 +563,7 @@ function PixelReadout({ value, top }: { value: PixelInspection; top: boolean }):
   );
 }
 
-function Sidebar({
+export function Sidebar({
   scene,
   dates,
   onDatesChange,

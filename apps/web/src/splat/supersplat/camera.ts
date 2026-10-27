@@ -15,13 +15,16 @@ export class Camera {
   elevation = -30;
   controlMode: 'orbit' | 'fly' = 'orbit';
   flySpeed = 1;
+  maxDistance = 1000;
+  minDistance = .005;
+  zoomFloor = .001;
   readonly ortho = false;
   private framing: BoundingBox | undefined;
   private dirty = true;
   private entryFrame: ReturnType<typeof mapViewFrame> | undefined;
 
   constructor(app: PCApp, canvas: HTMLCanvasElement) {
-    this.mainCamera = new Entity('SuperSplat viewer camera');
+    this.mainCamera = new Entity('SuperSplat viewer camera', app);
     this.mainCamera.addComponent('camera', { projection: PROJECTION_PERSPECTIVE, fov: 50, nearClip: 0.1, farClip: 10000, clearColor: [0.025, 0.035, 0.05, 1] });
     app.root.addChild(this.mainCamera);
     this.scene = { app, events: new EventHandler(), config: { controls: { orbitSensitivity: 0.2, zoomSensitivity: 0.3 } } };
@@ -39,7 +42,7 @@ export class Camera {
     this.update(0);
   }
   setDistance(distance: number, _damping = 1): void {
-    this.distanceTween.value.distance = Math.max(0.005 * this.fovFactor, Math.min(1000 * this.fovFactor, distance));
+    this.distanceTween.value.distance = Math.max((this.minDistance ?? .005) * this.fovFactor, Math.min((this.maxDistance ?? 1000) * this.fovFactor, distance));
     this.dirty = true;
     this.update(0);
   }
@@ -72,7 +75,7 @@ export class Camera {
     this.camera.farClip = Math.max(1000, this.sceneRadius * 30);
     this.focalPoint.set(...this.entryFrame.focalPoint);
     this.azim = this.entryFrame.azimuth;
-    this.elevation = -90;
+    this.elevation = this.entryFrame.elevation;
     this.distanceTween.value.distance = this.entryFrame.halfHeight / Math.tan(this.camera.fov * Math.PI / 360) * this.fovFactor / this.sceneRadius;
     this.dirty = true;
     this.update(0);

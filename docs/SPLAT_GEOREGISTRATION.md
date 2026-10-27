@@ -79,10 +79,11 @@ hash, final geographic transform, footprint and sampled local street heights.
 `src/data/splatGeoreference.ts` converts between model XY and EPSG:3857.
 Each scene stores a fixed origin and 2×2 transform, including Mercator scale.
 Coverage bounds only choose map tiles: they never set model scale or position.
-The local Z ground planes are 14 (JAX_068), -45 (NYC_004), 21 (JAX_004)
-and -40 (NYC_010), just below reconstructed streets instead of below the
-deepest noisy splat. The model and map share the
-same Z-up to Y-up root rotation.
+The local Z ground planes come from `src/data/splatGround.json`, generated
+by `scripts/calibrate-splat-ground.py`. Each plane is 0.20 ground metres below
+the median of opaque source-SOG street-patch medians. The model and map share
+the same Z-up to Y-up root rotation. The camera and Urban Lab consume this same
+scene reference.
 
 Scene selection bounds and city shortcut centers use the registered footprints.
 Tests check fitted and held-out reference feature pairs, rotated coordinate frames, tile-edge
@@ -106,8 +107,10 @@ ground plane show normal perspective parallax. Reset restores this entry view.
 Orbit, pan and zoom remain available.
 Ground tile coverage follows the camera as it pans, tilts or zooms beyond the
 entry viewport. Regional zoom-out adjusts the camera clipping planes with distance.
-The 2D map stays visible while the model and imagery load; the first completed
-3D frame fades in over 320 ms (disabled for reduced-motion preferences).
+The 2D map stays visible during initial coarse-model loading. The first coarse
+3D frame fades in over 320 ms (disabled for reduced-motion preferences), without
+waiting for satellite imagery. Imagery continues loading in the same registered
+frame and joins the scene as it arrives.
 
 ## Progressive LOD continuity
 
@@ -116,3 +119,47 @@ transform. Refinement never changes the geographic origin, scale, rotation,
 ground plane, footprint or camera framing. Fine-chunk/source position comparisons
 are recorded in each streamed scene's `alignment.json`; see
 [the streaming workflow](SPLAT_STREAMING.md).
+
+
+## Corrected vertical datum
+
+The previous planes deliberately sat below all sampled streets. This introduced
+visible gaps: for example JAX_260 used local Z=8 while its typical reconstructed
+street surface is near Z=31.7. Sharing that low plane with urban overlays also
+placed the analysis beneath the reconstructed roads. A common root rotation
+alone cannot correct this discrepancy.
+
+Re-measured every retained street-patch location in the actual source SOGs,
+using the native logarithmic position decode and opacity > sigmoid(1). The first
+two scenes now also retain street-patch coordinates and height statistics.
+Each scene evidence JSON records the source hash, per-patch quantiles, previous
+plane, measured median and the new datum. `splatGround.json` is generated from
+those measurements; no model XY, affine scale, rotation or splat positions change.
+
+| Scene | Previous map Z | Corrected map Z (rounded) |
+| --- | ---: | ---: |
+| JAX_068 | 14 | 22.66 |
+| NYC_004 | -45 | -38.61 |
+| JAX_004 | 21 | 24.33 |
+| NYC_010 | -40 | -35.94 |
+| JAX_164 | 20 | 27.90 |
+| JAX_175 | 18 | 29.67 |
+| JAX_214 | 15 | 26.05 |
+| JAX_260 | 8 | 31.51 |
+| JAX_168 | 18 | 26.65 |
+| JAX_264 | 19 | 25.86 |
+| NYC_219 | -38 | -28.92 |
+| NYC_336 | -43 | -30.44 |
+
+These are local model coordinates, not surveyed elevations. A flat median datum
+cannot match every sloping street or noisy reconstructed surface. The correction
+removes the systematic vertical separation; it does not claim terrain recovery.
+Urban road/shade lines sit 0.30 ground metres above the map (about 0.10 m above
+the representative street), and particles 0.60 m above the map. The former
+one-model-unit base lift and 1.5 m particle lift have been removed.
+
+Regression tests require every datum to stay within the specified 0.20 m of its
+measured street median and match its registration evidence/source hash. The
+existing geographic-feature tests and all twelve map-to-3D edge-projection
+continuity tests still pass. Browser visual inspection remains pending because
+this execution environment does not allow binding a local server port.

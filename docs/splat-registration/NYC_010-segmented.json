@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "scene": "NYC_010",
+  "kind": "experimental-segmented-splats",
+  "coordinateFrame": "registered-model-local",
+  "sourceSha256": "a4febf9866e1edddcfd24c1cde9c6ca529436a5259980640cd78b5d52c0c95a4",
+  "asset": "NYC_010-segmented.ply",
+  "assetSha256": "b398bd2326ddb33f15d5c17798aab0c5ed5b4c7ab522316b43ce49900047fce9",
+  "gaussians": 192722,
+  "classCounts": {
+    "buildings": 96047,
+    "roads": 72,
+    "trees": 6475,
+    "uncertain": 90128
+  },
+  "scorePolicy": "Strongest query relevance with minimum score 0.35 and margin 0.03; otherwise gray. Heuristic point coloring, not validated object segmentation.",
+  "geometryUnchanged": true,
+  "reducedDetail": true,
+  "limitations": "Reduced-detail pilot; building and road queries failed image-patch validation. Individual point labels and objects are unvalidated. Color regions are not object instances.",
+  "checkpointSha256": "e267c9d3541ebd9c23b77cd2c3bfd4699def31610b582a06cd9af7ffa685d349",
+  "decoderSha256": "5f5d040d101050668694892d283e88659ea251888a99fc95d5ac933b3372bb59",
+  "initializerPlySha256": "899e5be07e87b0c50fdf1e9ea8e6b4ae4f6dbb69a963e221cddea77e8814d18f",
+  "registrationEvidence": "NYC_010.json",
+  "registrationEvidenceSha256": "c8cc049a3aa6b015ba768740f2b1d9d0374af2e2562323fe753f0e102d6b711c",
+  "iteration": 6000,
+  "placement": "Exact original XYZ, scale, rotation and opacity; degree-zero class colors replace appearance only. Mounted under the same modelRoot as the full-detail normal view. No camera or geographic transform change."
+}

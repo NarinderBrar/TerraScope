@@ -5,7 +5,7 @@ export interface SplatGeoreference {
   origin: { lon: number; lat: number };
   /** [east per X, east per Y, north per X, north per Y]. Includes Mercator scale. */
   modelToMercator: readonly [number, number, number, number];
-  /** Local Z just below the reconstructed streets, excluding subsurface floaters. */
+  /** Local Z 0.20 ground metres below the representative measured street median. */
   groundZ: number;
 }
 export const MERCATOR_CIRCUMFERENCE = 40075016.68557849;

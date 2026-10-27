@@ -4,7 +4,7 @@ import { Blob as NodeBlob } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 import { Entity, http, NullGraphicsDevice } from 'playcanvas';
 import { PCApp } from '../src/splat/supersplat/pc-app';
-import { loadStreamingIndex, type StreamedSplatResource } from '../src/splat/streamingIndex';
+import { fetchStreamingIndex, loadStreamingIndex, type StreamedSplatResource } from '../src/splat/streamingIndex';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
@@ -24,7 +24,11 @@ it('loads an absolute-URL octree through the native parser and accepts it in a u
     return {} as XMLHttpRequest;
   });
   try {
-    const asset = await loadStreamingIndex(app, 'JAX_004', 'https://models.test/splats/streamed/JAX_004/lod-meta.json', new AbortController().signal);
+    const url = 'https://models.test/splats/streamed/JAX_004/lod-meta.json';
+    const signal = new AbortController().signal;
+    const prepared = fetchStreamingIndex(url, signal);
+    const asset = await loadStreamingIndex(app, 'JAX_004', url, signal, prepared);
+    expect(fetch).toHaveBeenCalledOnce();
     const resource = asset.resource as unknown as StreamedSplatResource;
     expect(resource.octree.files).toHaveLength(index.filenames.length);
     expect(resource.octree.files.every((file) => file.url.startsWith('https://models.test/splats/streamed/JAX_004/'))).toBe(true);

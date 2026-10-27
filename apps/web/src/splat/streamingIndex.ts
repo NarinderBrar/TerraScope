@@ -6,10 +6,8 @@ export interface StreamedSplatResource {
   octree: { files: { url: string; lodLevel: number }[]; assetLoader: { destroy(): void } | SplatChunkLoader | null };
 }
 
-/** Fetch the small index with cancellation, then let the engine construct its own
- * octree resource (including the correct debug/production class identity).
- */
-export async function loadStreamingIndex(app: PCApp, id: string, url: string, signal: AbortSignal): Promise<Asset> {
+/** Fetch independently of GPU initialization so these startup costs overlap. */
+export async function fetchStreamingIndex(url: string, signal: AbortSignal) {
   const absolute = new URL(url, window.location.href).href;
   const response = await fetch(absolute, { signal });
   if (!response.ok || response.headers.get('content-type')?.includes('text/html')) throw new Error(`3D tile index is unavailable (${response.status}).`);
@@ -17,6 +15,14 @@ export async function loadStreamingIndex(app: PCApp, id: string, url: string, si
   if (meta.lodLevels !== 3 || !Array.isArray(meta.filenames) || !meta.filenames.length || !meta.tree?.bound) throw new Error('Invalid 3D tile index.');
   meta.filenames = meta.filenames.map((file: string) => new URL(file, absolute).href);
   if (meta.environment) throw new Error('Unexpected splat environment in registered city tiles.');
+  signal.throwIfAborted();
+  return meta;
+}
+
+/** Let the native parser construct the resource, preserving engine class identity. */
+export async function loadStreamingIndex(app: PCApp, id: string, url: string, signal: AbortSignal,
+  prepared?: ReturnType<typeof fetchStreamingIndex>): Promise<Asset> {
+  const meta = await (prepared ?? fetchStreamingIndex(url, signal));
   signal.throwIfAborted();
   const objectUrl = URL.createObjectURL(new Blob([JSON.stringify(meta)], { type: 'application/json' }));
   const asset = new Asset(id, 'gsplat', { url: objectUrl, filename: 'lod-meta.json' });

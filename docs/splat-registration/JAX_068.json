@@ -354,5 +354,83 @@
         576.6126098632812
       ]
     }
-  ]
+  ],
+  "georeference": {
+    "origin": {
+      "lon": -81.66376054127814,
+      "lat": 30.34881972282938
+    },
+    "modelToMercator": [
+      1.1617442851249093,
+      0.0004266472952384817,
+      -0.0004266472952384817,
+      1.1617442851249093
+    ],
+    "groundZ": 22.660886808885536
+  },
+  "groundSamples": [
+    {
+      "modelXY": [
+        200,
+        10
+      ],
+      "medianZ": 19.520966721876288,
+      "count": 47,
+      "radius": 5,
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
+      "heightQuantiles": {
+        "p10": 13.781945351896193,
+        "p25": 16.191196569508683,
+        "p50": 19.520966721876288,
+        "p75": 20.83243623589432,
+        "p90": 21.247934065363054
+      }
+    },
+    {
+      "modelXY": [
+        -220,
+        -200
+      ],
+      "medianZ": 22.860379075592157,
+      "count": 66,
+      "radius": 5,
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
+      "heightQuantiles": {
+        "p10": 18.49473699311072,
+        "p25": 21.236187426437453,
+        "p50": 22.860379075592157,
+        "p75": 23.307453021851074,
+        "p90": 23.510486154872492
+      }
+    },
+    {
+      "modelXY": [
+        -250,
+        0
+      ],
+      "medianZ": 24.38515705212999,
+      "count": 68,
+      "radius": 5,
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
+      "heightQuantiles": {
+        "p10": 20.209154576158618,
+        "p25": 22.72358596316486,
+        "p50": 24.38515705212999,
+        "p75": 28.228966426228634,
+        "p90": 31.44020714382564
+      }
+    }
+  ],
+  "sourceAssetSha256": "6097e9c87a651f5e03f859a26e85124369205129b5bc9023c82b191ba6b27a05",
+  "groundHeightMethod": "Median of opaque source-SOG street-patch medians, less 0.20 ground metres. Shared map, entry camera and urban-analysis datum.",
+  "verticalAlignment": {
+    "previousGroundZ": 14,
+    "groundZ": 22.660886808885536,
+    "medianStreetZ": 22.860379075592157,
+    "clearanceGroundMetres": 0.2,
+    "groundMetresPerModelUnit": 1.0025451276972375,
+    "method": "scripts/calibrate-splat-ground.py",
+    "sourceSha256": "6097e9c87a651f5e03f859a26e85124369205129b5bc9023c82b191ba6b27a05",
+    "limitation": "Representative flat datum, not a terrain model. Local street variation and reconstruction errors remain."
+  }
 }

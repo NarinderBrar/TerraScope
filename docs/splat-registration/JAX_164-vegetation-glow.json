@@ -1,0 +1,229 @@
+{
+  "schemaVersion": 1,
+  "scene": "JAX_164",
+  "kind": "langsplat-vegetation-glow",
+  "category": "vegetation",
+  "coordinateFrame": "registered-model-local",
+  "sourceSha256": "6e56260e3ee4c5d5190f07c990d2af30a05ae6e1f98eb103f271c6af32b2037f",
+  "asset": "JAX_164-vegetation-glow.bin",
+  "assetSha256": "4c0485f0925ca342e25972f1f2ce007e8106bfdf3573e9c3364d997415e55930",
+  "byteLength": 16777216,
+  "gridSize": [
+    512,
+    512,
+    64
+  ],
+  "atlasSize": [
+    4096,
+    4096
+  ],
+  "tilesPerRow": 8,
+  "boundsMin": [
+    -458.1768493652344,
+    -442.99322509765625,
+    -52.459815979003906
+  ],
+  "boundsMax": [
+    414.8202819824219,
+    436.3853759765625,
+    168.74012756347656
+  ],
+  "minimumLocalZ": -53.459815979003906,
+  "fieldVersion": 3,
+  "evidenceMode": "multiview",
+  "nonzeroVoxels": 116471,
+  "maximumWeight": 1.0,
+  "basis": "Full 512-D LangSplat SAM/CLIP features, multilevel masks, occlusion-tested camera projection, median/upper-quartile multi-view fusion. Uncertain trained latent relevance is capped below the activation ramp where fewer than two views observe a centre. RGB supports semantically plausible vegetation and small nearby mask gaps; no colour-only labels.Fixed viewer cutoff; spatial smoothing in the original registered frame. No OSM labels.",
+  "limitations": "Approximate spatial transfer to full-detail Gaussians. Building queries remain unvalidated; missed buildings and false matches remain. Not object segmentation.",
+  "checkpointSha256": "53e63a2a2c6da1c3843c18793a9295caeb19d4f472e767e3568e55a052db3a0f",
+  "decoderSha256": "7b5e4c9de8002b9e83f290e96ed4938353a599b828ab1f02507a56ca245560a9",
+  "registrationEvidenceSha256": "13fbf1138fca36e8f88d0f1217c8693984b8b3a1aae748826daa745aabfa6e68",
+  "iteration": 6000,
+  "geometryChanges": "None. Texture weights only; original streamed Gaussians remain active.",
+  "refinement": {
+    "inputFingerprint": "c85ae462b1c11e6c7e53e5e82fc229277f6161961b2c8a9f5cfda2ba554a0d6b",
+    "sceneSource": "/home/narinder/Documents/OrbitWorks/LangSplat/data/skyfall_JAX_164_quality_v2",
+    "prompts": {
+      "building": [
+        "a building",
+        "an office building",
+        "a skyscraper"
+      ],
+      "roof": [
+        "a building roof",
+        "a rooftop",
+        "the roof of a house"
+      ],
+      "stadium": [
+        "a sports stadium",
+        "stadium grandstands and seating",
+        "a football stadium"
+      ],
+      "houses": [
+        "an aerial view of houses",
+        "a residential house",
+        "the roofs of houses"
+      ],
+      "seating": [
+        "rows of stadium seats",
+        "stadium seating stands",
+        "a grandstand"
+      ],
+      "trees": [
+        "trees",
+        "a tree canopy",
+        "dense green trees"
+      ],
+      "grass": [
+        "a grass lawn",
+        "green grass",
+        "a grassy field"
+      ],
+      "shrubs": [
+        "shrubs and bushes",
+        "green vegetation",
+        "a planted garden"
+      ],
+      "road": [
+        "a road",
+        "a highway",
+        "an asphalt road"
+      ],
+      "parking": [
+        "a parking lot full of cars",
+        "rows of parked cars",
+        "a car park"
+      ],
+      "bridge": [
+        "a highway bridge",
+        "a road bridge",
+        "an elevated highway"
+      ],
+      "pavement": [
+        "concrete pavement",
+        "a paved plaza",
+        "a concrete sidewalk"
+      ],
+      "boats": [
+        "boats in a harbor",
+        "a marina with boats",
+        "boat docks"
+      ],
+      "water": [
+        "a body of water",
+        "a river",
+        "water in a harbor"
+      ],
+      "pond": [
+        "a pond",
+        "a lake",
+        "a water retention pond"
+      ],
+      "soil": [
+        "bare soil",
+        "sand and dirt",
+        "a paved plaza"
+      ]
+    },
+    "method": "Full 512-D LangSplat SAM/CLIP features, multilevel masks, occlusion-tested camera projection, median/upper-quartile multi-view fusion. Uncertain trained latent relevance is capped below the activation ramp where fewer than two views observe a centre. RGB supports semantically plausible vegetation and small nearby mask gaps; no colour-only labels.",
+    "views": [
+      {
+        "image": "JAX_164_006_RGB.png",
+        "visibleGaussianCentres": 72768
+      },
+      {
+        "image": "JAX_164_023_RGB.png",
+        "visibleGaussianCentres": 76406
+      },
+      {
+        "image": "JAX_164_013_RGB.png",
+        "visibleGaussianCentres": 77901
+      },
+      {
+        "image": "JAX_164_022_RGB.png",
+        "visibleGaussianCentres": 71616
+      },
+      {
+        "image": "JAX_164_014_RGB.png",
+        "visibleGaussianCentres": 79384
+      },
+      {
+        "image": "JAX_164_018_RGB.png",
+        "visibleGaussianCentres": 70767
+      },
+      {
+        "image": "JAX_164_019_RGB.png",
+        "visibleGaussianCentres": 72396
+      },
+      {
+        "image": "JAX_164_010_RGB.png",
+        "visibleGaussianCentres": 94847
+      },
+      {
+        "image": "JAX_164_021_RGB.png",
+        "visibleGaussianCentres": 90743
+      },
+      {
+        "image": "JAX_164_025_RGB.png",
+        "visibleGaussianCentres": 76551
+      },
+      {
+        "image": "JAX_164_009_RGB.png",
+        "visibleGaussianCentres": 78432
+      },
+      {
+        "image": "JAX_164_005_RGB.png",
+        "visibleGaussianCentres": 75499
+      },
+      {
+        "image": "JAX_164_008_RGB.png",
+        "visibleGaussianCentres": 75870
+      },
+      {
+        "image": "JAX_164_011_RGB.png",
+        "visibleGaussianCentres": 70673
+      },
+      {
+        "image": "JAX_164_007_RGB.png",
+        "visibleGaussianCentres": 71755
+      },
+      {
+        "image": "JAX_164_015_RGB.png",
+        "visibleGaussianCentres": 79582
+      },
+      {
+        "image": "JAX_164_001_RGB.png",
+        "visibleGaussianCentres": 73547
+      },
+      {
+        "image": "JAX_164_016_RGB.png",
+        "visibleGaussianCentres": 75229
+      },
+      {
+        "image": "JAX_164_004_RGB.png",
+        "visibleGaussianCentres": 70553
+      },
+      {
+        "image": "JAX_164_002_RGB.png",
+        "visibleGaussianCentres": 70973
+      }
+    ],
+    "centresWithAtLeastTwoViews": 92129,
+    "totalCentres": 174551,
+    "reviewedStadiumCentres": 0,
+    "reviewAnnotation": null,
+    "evaluationBasis": "All available prepared source views are correction inputs, including prior camera holdouts. Source overlays are diagnostic, not independent accuracy validation."
+  },
+  "policy": {
+    "legacyScoreRamp": null,
+    "queryMarginRamp": null,
+    "minimumOpaqueSupport": 1,
+    "minimumOpacity": 0.25,
+    "minimumAboveStreetMetres": null,
+    "refinedScoreRamp": [
+      0.43,
+      0.75
+    ],
+    "uncertainFallbackMaximum": 0.4
+  }
+}

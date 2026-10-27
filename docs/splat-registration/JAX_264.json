@@ -750,7 +750,7 @@
       -0.0005283167613157935,
       1.1614559668618911
     ],
-    "groundZ": 19
+    "groundZ": 25.864633799528068
   },
   "coverageModelBounds": [
     -360,
@@ -770,23 +770,23 @@
   },
   "groundMetresPerModelUnit": 1.0026742585860122,
   "rotationDegrees": -0.026062390176917045,
-  "groundHeightMethod": "Plane below locally sampled reconstructed street surfaces; excludes subsurface floaters. Local Z, not surveyed elevation.",
+  "groundHeightMethod": "Median of opaque source-SOG street-patch medians, less 0.20 ground metres. Shared map, entry camera and urban-analysis datum.",
   "groundSamples": [
     {
       "modelXY": [
         -170,
         0
       ],
-      "medianZ": 26.036109924316406,
-      "count": 101,
+      "medianZ": 26.064100374327786,
+      "count": 82,
       "radius": 5,
-      "heightFilter": "finite local Z and opacity logit > 1",
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
       "heightQuantiles": {
-        "p10": 23.21023941040039,
-        "p25": 24.67319679260254,
-        "p50": 26.036109924316406,
-        "p75": 26.67484474182129,
-        "p90": 27.341232299804688
+        "p10": 23.58232173169727,
+        "p25": 25.004481547387517,
+        "p50": 26.064100374327786,
+        "p75": 26.72192167971532,
+        "p90": 27.699728133010893
       }
     },
     {
@@ -794,16 +794,16 @@
         -280,
         -250
       ],
-      "medianZ": 36.860504150390625,
-      "count": 202,
+      "medianZ": 38.033748471957544,
+      "count": 163,
       "radius": 5,
-      "heightFilter": "finite local Z and opacity logit > 1",
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
       "heightQuantiles": {
-        "p10": 27.305654335021973,
-        "p25": 33.05769920349121,
-        "p50": 36.860504150390625,
-        "p75": 39.170562744140625,
-        "p90": 40.34231834411621
+        "p10": 27.220057216576308,
+        "p25": 33.268608361681565,
+        "p50": 38.033748471957544,
+        "p75": 39.60179438925306,
+        "p90": 40.51500492611826
       }
     },
     {
@@ -811,16 +811,16 @@
         130,
         -150
       ],
-      "medianZ": 25.964282989501953,
-      "count": 127,
+      "medianZ": 25.860901931736436,
+      "count": 98,
       "radius": 5,
-      "heightFilter": "finite local Z and opacity logit > 1",
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
       "heightQuantiles": {
-        "p10": 22.365420532226562,
-        "p25": 24.59931755065918,
-        "p50": 25.964282989501953,
-        "p75": 29.675317764282227,
-        "p90": 30.306911087036134
+        "p10": 22.791379240133164,
+        "p25": 24.59837126967831,
+        "p50": 25.860901931736436,
+        "p75": 29.37195740931439,
+        "p90": 30.274056997239118
       }
     }
   ],
@@ -834,5 +834,15 @@
   "referenceImageSize": {
     "width": 3072,
     "height": 2816
+  },
+  "verticalAlignment": {
+    "previousGroundZ": 19,
+    "groundZ": 25.864633799528068,
+    "medianStreetZ": 26.064100374327786,
+    "clearanceGroundMetres": 0.2,
+    "groundMetresPerModelUnit": 1.0026742585860122,
+    "method": "scripts/calibrate-splat-ground.py",
+    "sourceSha256": "7ffe1ade6d4c1713f42714938d71d400eeb9e82c98d9113827ed4dbcce86ef8b",
+    "limitation": "Representative flat datum, not a terrain model. Local street variation and reconstruction errors remain."
   }
 }

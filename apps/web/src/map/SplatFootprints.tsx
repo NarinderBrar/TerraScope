@@ -1,6 +1,7 @@
 import type { MapView } from '../app/MapScene';
 import type { SplatSceneMeta } from '../data/splatScenes';
 import { projectSplatFootprints } from './splatFootprints';
+import { preloadSplatViewer } from '../splat/preload';
 
 export function SplatFootprints({ view, hoveredId, onOpen }: {
   view: MapView;
@@ -18,6 +19,7 @@ export function SplatFootprints({ view, hoveredId, onOpen }: {
       data-scene-id={box.scene.id}
       data-hovered={box.scene.id === hoveredId}
       aria-label={`Open ${box.scene.name} in 3D`}
+      onFocus={preloadSplatViewer}
       onClick={() => onOpen(box.scene)}
       style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
     >

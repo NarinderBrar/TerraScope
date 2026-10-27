@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { Mat4, Vec3 } from 'playcanvas';
+import { BLEND_NONE, BLEND_NORMAL, Mat4, Vec3, type StandardMaterial } from 'playcanvas';
 import { createGroundMap } from '../src/splat/GroundMapLayer';
 import { fetchWorldImageryTile } from '../src/map/worldImagery';
 import { SKYFALL_SCENES } from '../src/data/splatScenes';
@@ -7,7 +7,7 @@ import type { PCApp } from '../src/splat/supersplat/pc-app';
 import type { Camera } from '../src/splat/supersplat/camera';
 import type { Entity } from 'playcanvas';
 
-const resources = vi.hoisted(() => ({ textures: [] as { destroy: ReturnType<typeof vi.fn> }[], meshes: [] as { destroy: ReturnType<typeof vi.fn> }[] }));
+const resources = vi.hoisted(() => ({ textures: [] as { destroy: ReturnType<typeof vi.fn> }[], meshes: [] as { destroy: ReturnType<typeof vi.fn> }[], visibleMaterials: [] as StandardMaterial[] }));
 vi.mock('../src/map/worldImagery', () => ({ fetchWorldImageryTile: vi.fn(), WORLD_IMAGERY_MAX_ZOOM: 20 }));
 vi.mock('playcanvas', async (importOriginal) => {
   const original = await importOriginal<typeof import('playcanvas')>();
@@ -26,11 +26,11 @@ vi.mock('playcanvas', async (importOriginal) => {
     addComponent = vi.fn(); addChild = vi.fn(); destroy = vi.fn();
     getWorldTransform() { return new original.Mat4(); }
   }
-  return { ...original, Texture, Mesh, Entity, StandardMaterial: class { update() {} destroy() {} }, MeshInstance: class {
-    constructor(public mesh: unknown, public material: unknown) {}
+  return { ...original, Texture, Mesh, Entity, MeshInstance: class {
+    constructor(public mesh: unknown, public material: StandardMaterial) { resources.visibleMaterials.push(material); }
   } };
 });
-afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); resources.textures.length = resources.meshes.length = 0; });
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); resources.textures.length = resources.meshes.length = resources.visibleMaterials.length = 0; });
 const settle = async () => { for (let i = 0; i < 400; i++) await Promise.resolve(); };
 
 it('streams new imagery with the camera, resumes after hiding, and destroys GPU residency on exit', async () => {
@@ -53,6 +53,18 @@ it('streams new imagery with the camera, resumes after hiding, and destroys GPU 
   expect(onStatus).toHaveBeenCalledWith('ready');
   expect(drawImage).toHaveBeenCalled();
   expect(resources.meshes.length).toBeGreaterThan(1);
+  const groundMaterial = resources.visibleMaterials[0];
+  // Keep map tiles behind splats at every camera angle. Only the globe
+  // crossfade needs transparency; returning to the city restores opaque sorting.
+  expect(groundMaterial.blendType).toBe(BLEND_NONE);
+  expect(groundMaterial.transparent).toBe(false);
+  expect(groundMaterial.depthWrite).toBe(false);
+  layer.setOpacity!(.5);
+  expect(groundMaterial.blendType).toBe(BLEND_NORMAL);
+  expect(groundMaterial.opacity).toBe(.5);
+  layer.setOpacity!(1);
+  expect(groundMaterial.blendType).toBe(BLEND_NONE);
+  expect(groundMaterial.transparent).toBe(false);
   const before = vi.mocked(fetchWorldImageryTile).mock.calls.length;
   layer.setVisible(false);
   position.x = 25000;
@@ -69,4 +81,13 @@ it('streams new imagery with the camera, resumes after hiding, and destroys GPU 
   for (const texture of resources.textures) expect(texture.destroy).toHaveBeenCalledOnce();
   for (const mesh of resources.meshes) expect(mesh.destroy).toHaveBeenCalledOnce();
   expect(close).toHaveBeenCalledTimes(drawImage.mock.calls.length);
+  const fetches = vi.mocked(fetchWorldImageryTile).mock.calls.length;
+  const decodes = drawImage.mock.calls.length;
+  // A new viewer/device rebuilds textures from shared images without downloading
+  // or decoding the same geographic tiles after the old layer is disposed.
+  const nextLayer = createGroundMap(app, modelRoot, reference, camera, vi.fn());
+  await settle();
+  expect(vi.mocked(fetchWorldImageryTile)).toHaveBeenCalledTimes(fetches);
+  expect(drawImage).toHaveBeenCalledTimes(decodes);
+  nextLayer.dispose();
 });

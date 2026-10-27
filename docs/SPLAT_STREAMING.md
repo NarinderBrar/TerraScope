@@ -43,6 +43,14 @@ not imply that every visible area has that quality. Detail failures retain the
 current scene and expose **Retry detail** after three attempts. Initial coarse
 failure instead offers the scene retry flow.
 
+The coarse canvas is revealed independently of satellite imagery readiness;
+slow map requests cannot keep ready splats invisible. Viewer code starts loading
+on hover, pointer press or keyboard focus on a 3D entry point. Activation fetches
+the index concurrently with graphics-device initialization, then starts spatial
+streaming. A cold entry still needs the viewer module, graphics pipelines and
+the first chunk's metadata/textures before there are splats to draw. These startup
+costs differ from the subsequent worker-based refinement.
+
 ## Prepare and validate assets
 
 ```bash

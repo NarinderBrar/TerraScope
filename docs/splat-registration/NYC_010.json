@@ -530,7 +530,7 @@
       -0.00033279549121545843,
       1.311177022955157
     ],
-    "groundZ": -40
+    "groundZ": -35.943485739579934
   },
   "coverageModelBounds": [
     -425,
@@ -550,21 +550,51 @@
   },
   "groundMetresPerModelUnit": 0.9935276217392603,
   "rotationDegrees": -0.01454248842402222,
-  "groundHeightMethod": "Plane below locally sampled reconstructed street surfaces; excludes subsurface floaters. Local Z, not surveyed elevation.",
+  "groundHeightMethod": "Median of opaque source-SOG street-patch medians, less 0.20 ground metres. Shared map, entry camera and urban-analysis datum.",
   "groundSamples": [
     {
       "modelXY": [
         -20,
         -15
       ],
-      "medianZ": -34.829322814941406
+      "medianZ": -34.51452711586257,
+      "count": 26,
+      "radius": 5,
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
+      "heightQuantiles": {
+        "p10": -36.69499104147967,
+        "p25": -35.766421365973855,
+        "p50": -34.51452711586257,
+        "p75": -31.469728164692015,
+        "p90": -28.55986378103441
+      }
     },
     {
       "modelXY": [
         40,
         200
       ],
-      "medianZ": -36.88736343383789
+      "medianZ": -36.969838546158805,
+      "count": 82,
+      "radius": 5,
+      "heightFilter": "source SOG opacity > sigmoid(1); finite decoded local Z",
+      "heightQuantiles": {
+        "p10": -37.8969250338949,
+        "p25": -37.4841576854843,
+        "p50": -36.969838546158805,
+        "p75": -36.49040731879754,
+        "p90": -36.08249575540142
+      }
     }
-  ]
+  ],
+  "verticalAlignment": {
+    "previousGroundZ": -40,
+    "groundZ": -35.943485739579934,
+    "medianStreetZ": -35.74218283101069,
+    "clearanceGroundMetres": 0.2,
+    "groundMetresPerModelUnit": 0.9935276217392601,
+    "method": "scripts/calibrate-splat-ground.py",
+    "sourceSha256": "a4febf9866e1edddcfd24c1cde9c6ca529436a5259980640cd78b5d52c0c95a4",
+    "limitation": "Representative flat datum, not a terrain model. Local street variation and reconstruction errors remain."
+  }
 }

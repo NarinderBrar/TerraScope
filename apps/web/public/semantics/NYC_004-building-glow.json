@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "scene": "NYC_004",
+  "kind": "langsplat-building-glow",
+  "category": "buildings",
+  "coordinateFrame": "registered-model-local",
+  "sourceSha256": "105ae47493db472d049c3b45f16b183151799a55415fe2827c648db75251ce17",
+  "asset": "NYC_004-building-glow.bin",
+  "assetSha256": "d850ee11f4cff78468b655b559aef66fc6d278b89e5d456ff887f548cad183e8",
+  "byteLength": 16777216,
+  "gridSize": [
+    512,
+    512,
+    64
+  ],
+  "atlasSize": [
+    4096,
+    4096
+  ],
+  "tilesPerRow": 8,
+  "boundsMin": [
+    -509.40716552734375,
+    -486.9101867675781,
+    -75.33041381835938
+  ],
+  "boundsMax": [
+    330.40911865234375,
+    373.7850036621094,
+    399.4732971191406
+  ],
+  "minimumLocalZ": -76.33041381835938,
+  "fieldVersion": 3,
+  "evidenceMode": "multiview",
+  "nonzeroVoxels": 255547,
+  "maximumWeight": 1.0,
+  "basis": "Full 512-D LangSplat SAM/CLIP features, multilevel masks, occlusion-tested camera projection, median/upper-quartile multi-view fusion. Uncertain trained latent relevance is capped below the activation ramp where fewer than two views observe a centre. RGB supports semantically plausible vegetation and small nearby mask gaps; no colour-only labels.Fixed viewer cutoff; spatial smoothing in the original registered frame. No OSM labels.",
+  "limitations": "Approximate spatial transfer to full-detail Gaussians. Building queries remain unvalidated; missed buildings and false matches remain. Not object segmentation."
+}

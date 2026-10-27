@@ -43,7 +43,7 @@ class PointerController {
         };
 
         const zoom = (amount: number) => {
-            camera.setDistance(camera.distance - (camera.distance * 0.999 + 0.001) * amount * camera.scene.config.controls.zoomSensitivity, 2);
+            camera.setDistance(camera.distance - (camera.distance * 0.999 + (camera.zoomFloor ?? .001)) * amount * camera.scene.config.controls.zoomSensitivity, 2);
         };
 
         const pickFocalPoint = (event: MouseEvent) => {

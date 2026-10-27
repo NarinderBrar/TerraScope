@@ -9,6 +9,10 @@ preview mode. See the [scene catalog and registration evidence](docs/SKYFALL_EXP
 
 ## What works
 
+- **Urban Lab** inside registered 3D scenes: OpenStreetMap buildings, roads, trees,
+  stops and crossings; animated simulated traffic; sun and pedestrian shade;
+  before/proposed road closures, signal-capacity assumptions, bus lanes and mature
+  trees. Includes source labels and scenario JSON export. See [models and limits](docs/URBAN_LAB.md).
 - Explorer and 3D ground maps share Esri World Imagery. Explorer zoom reaches level 20, with lower-resolution imagery retained where detail is unavailable; Sentinel-2 analysis tiles keep their existing level-14 grid.
 - **3D Footprints** highlights registered splat coverage with transparent green boxes. Click a green area to open its map-aligned scene; dragging and scrolling still pan and zoom. Coverage stays enabled when returning from 3D, and registered scenes appear automatically. Overlapping coverage opens the scene whose centre is nearest the click.
 - The 3D satellite ground streams with the camera beyond the city model, refining imagery as you approach and retaining a coarse overview while tiles load. Pan, orbit and regional zoom-out share the same registered frame.

@@ -1,3 +1,4 @@
+import measuredGround from './splatGround.json';
 import { modelToGeographic, type SplatGeoreference } from './splatGeoreference';
 import { screenToLonLat, type CameraState, type Viewport } from '../map/MapCamera';
 
@@ -21,22 +22,22 @@ const splatBase = (import.meta.env.VITE_SPLAT_BASE_URL || `${import.meta.env.BAS
 const jaxReference: SplatGeoreference = {
   origin: { lon: -81.66376054127814, lat: 30.34881972282938 },
   modelToMercator: [1.1617442851249093, 0.0004266472952384817, -0.0004266472952384817, 1.1617442851249093],
-  groundZ: 14,
+  groundZ: measuredGround.JAX_068.groundZ,
 };
 const nycReference: SplatGeoreference = {
   origin: { lon: -74.01480690018744, lat: 40.71530642139432 },
   modelToMercator: [1.191699539031423, 0.03620725592166198, -0.03620725592166198, 1.191699539031423],
-  groundZ: -45,
+  groundZ: measuredGround.NYC_004.groundZ,
 };
 const jaxResidentialReference: SplatGeoreference = {
   origin: { lon: -81.70644458901064, lat: 30.35783436434288 },
   modelToMercator: [1.161701296917393, 0.0006820066865091224, -0.0006820066865091224, 1.161701296917393],
-  groundZ: 21,
+  groundZ: measuredGround.JAX_004.groundZ,
 };
 const nycUnionSquareReference: SplatGeoreference = {
   origin: { lon: -73.98974566853668, lat: 40.734882608346474 },
   modelToMercator: [1.311177022955157, 0.00033279549121545843, -0.00033279549121545843, 1.311177022955157],
-  groundZ: -40,
+  groundZ: measuredGround.NYC_010.groundZ,
 };
 const jaxCityHallReference: SplatGeoreference = {
   "origin": {
@@ -49,7 +50,7 @@ const jaxCityHallReference: SplatGeoreference = {
     0.002649375659901217,
     1.158496424393592
   ],
-  "groundZ": 20
+  "groundZ": measuredGround.JAX_164.groundZ
 };
 const jaxStadiumReference: SplatGeoreference = {
   "origin": {
@@ -62,7 +63,7 @@ const jaxStadiumReference: SplatGeoreference = {
     0.0048606252811765486,
     1.1600485785347157
   ],
-  "groundZ": 18
+  "groundZ": measuredGround.JAX_175.groundZ
 };
 const jaxOfficeReference: SplatGeoreference = {
   "origin": {
@@ -75,7 +76,7 @@ const jaxOfficeReference: SplatGeoreference = {
     -0.00013860233794552864,
     1.1577293122496932
   ],
-  "groundZ": 15
+  "groundZ": measuredGround.JAX_214.groundZ
 };
 const jaxLakeSideReference: SplatGeoreference = {
   "origin": {
@@ -88,27 +89,27 @@ const jaxLakeSideReference: SplatGeoreference = {
     -0.0008714327971019938,
     1.1619452363225427
   ],
-  "groundZ": 8
+  "groundZ": measuredGround.JAX_260.groundZ
 };
 const jaxVillaReference: SplatGeoreference = {
   origin: { lon: -81.6529787723244, lat: 30.330379623025866 },
   modelToMercator: [1.1601508824140814, 0.0012359839098766904, -0.0012359839098766904, 1.1601508824140814],
-  groundZ: 18,
+  groundZ: measuredGround.JAX_168.groundZ,
 };
 const jaxFactoryReference: SplatGeoreference = {
   origin: { lon: -81.6528551421137, lat: 30.31190308097151 },
   modelToMercator: [1.1614559668618911, 0.0005283167613157935, -0.0005283167613157935, 1.1614559668618911],
-  groundZ: 19,
+  groundZ: measuredGround.JAX_264.groundZ,
 };
 const nycEast12thReference: SplatGeoreference = {
   origin: { lon: -73.98689061630894, lat: 40.731919915172575 },
   modelToMercator: [1.3240495290904157, -0.01046910527263944, 0.01046910527263944, 1.3240495290904157],
-  groundZ: -38,
+  groundZ: measuredGround.NYC_219.groundZ,
 };
 const nycAlbanyReference: SplatGeoreference = {
   origin: { lon: -74.01752231045515, lat: 40.71024829908964 },
   modelToMercator: [1.3249109340308445, 0.002195367553402994, -0.002195367553402994, 1.3249109340308445],
-  groundZ: -43,
+  groundZ: measuredGround.NYC_336.groundZ,
 };
 function footprint(reference: SplatGeoreference, minX: number, minY: number, maxX: number, maxY: number): GeoBounds {
   const points = [[minX, minY], [minX, maxY], [maxX, minY], [maxX, maxY]].map(([x, y]) => modelToGeographic(reference, x, y));
