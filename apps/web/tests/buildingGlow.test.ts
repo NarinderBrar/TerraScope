@@ -107,5 +107,8 @@ it('loads a refined scene atlas and switches cyan holograms to green vegetation'
     await glow.setCategory('vegetation');
     expect(model.gsplat!.getParameter('buildingGlowKind')).toBe(1);
     expect(model.gsplat!.getParameter('buildingGlowTint')).toEqual([.18, 1, .38]);
+    const vegetationTime = model.gsplat!.getParameter('buildingGlowTime') as number;
+    glow.update(.15);
+    expect(model.gsplat!.getParameter('buildingGlowTime')).toBeGreaterThan(vegetationTime);
   } finally { glow.dispose(); app.destroy(); }
 });

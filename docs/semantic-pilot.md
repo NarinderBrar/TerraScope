@@ -26,10 +26,16 @@ The annotation and its source image checksum are retained in
 `LangSplat/validation/semantic_refinement_v2/JAX_175-stadium.json`. This is a review
 correction, not a claim that LangSplat automatically learned a complete stadium.
 
-Buildings now use blue/cyan tint, a world-metric grid (4 m XY, 3 m vertical), and
-an animated scan band inspired by the user's reference. These are shader colours
+Pressing **Start glow** with **Buildings** selected applies a blue holographic
+body with luminous cyan grid lines (4 m XY, 3 m vertical), staggered vertical
+light trails, fine horizontal stripes, and a moving scan band with a bright core.
+The matched body darkens slightly to distinguish the luminous lines against
+bright satellite colours. These are shader colours
 on original splats, not a reconstructed triangle wireframe or mesh-edge outline.
-Vegetation stays green. The 50% pulse cap and reduced-motion behavior remain.
+Vegetation uses the same holographic treatment with emerald/mint light and a
+finer grid (2 m XY, 1.5 m vertical) to suit trees and low planting.
+Both categories pulse between 30% and 50% so the dim
+phase remains visible; reduced-motion mode keeps the scan and trails static.
 The scan and pulse update at most 10 Hz; static reduced-motion parameters are not
 repeatedly dirtied. Live GPU appearance needs host-browser review.
 

@@ -88,6 +88,7 @@ export function createLangSplatBuildingGlow(app: PCApp, root: Entity, model: Ent
     component.setParameter('buildingGlowInvSpan', meta.boundsMin.map((v, i) => 1 / (meta.boundsMax[i] - v)));
     component.setParameter('buildingGlowTint', target === 'buildings' ? [.04, .5, 1] : [.18, 1, .38]);
     component.setParameter('buildingGlowActive', 1);
+    component.setParameter('buildingGlowTime', 0);
     component.setParameter('buildingGlowPulse', buildingPulse(0, motion?.matches));
     time = 0; active = true;
   };
@@ -122,7 +123,7 @@ export function createLangSplatBuildingGlow(app: PCApp, root: Entity, model: Ent
       }
       if (active) {
         const scanTime = motion?.matches ? 0 : time;
-        if (category === 'buildings' && component?.getParameter('buildingGlowTime') !== scanTime) component?.setParameter('buildingGlowTime', scanTime);
+        if (component?.getParameter('buildingGlowTime') !== scanTime) component?.setParameter('buildingGlowTime', scanTime);
         const next = buildingPulse(time, motion?.matches);
         if (component?.getParameter('buildingGlowPulse') !== next) component?.setParameter('buildingGlowPulse', next);
       }
