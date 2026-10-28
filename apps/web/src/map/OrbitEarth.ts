@@ -3,8 +3,9 @@ import { ADDRESS_CLAMP_TO_EDGE, BLEND_NONE, BLEND_NORMAL, CULLFACE_BACK, Color, 
   Quat, StandardMaterial, Texture, Vec3 } from 'playcanvas';
 import type { PCApp } from '../splat/supersplat/pc-app';
 import type { Camera } from '../splat/supersplat/camera';
-import { groundTileImages } from '../splat/GroundTileImages';
-import { GroundTileStream } from '../splat/GroundTileStream';
+import { basemapTileImages } from '../splat/GroundTileImages';
+import { BasemapTileStream } from '../splat/BasemapTileStream';
+import type { BasemapStyle } from './darkVectorTiles';
 import { groundTileKey, type GroundTile, type VisibleGroundTile } from '../splat/groundTilePlan';
 import { EARTH_BASE_SCALE, earthClipPlanes, earthTileGeometry, planEarthTiles } from './earthTilePlan';
 import { EARTH_RADIUS, globePoint } from './navigation3D';
@@ -73,11 +74,11 @@ export function createOrbitEarth(app: PCApp, anchor: { lon: number; lat: number 
     // sphere patch. Keep old resources alive until their replacements are bound.
     for (const key of meshes.keys()) if (!keep.has(key)) remove(key);
   };
-  const stream = new GroundTileStream<TileResource>(async (tile: GroundTile, signal) => {
-    const image = await groundTileImages.get(tile.z, tile.x, tile.y, signal);
+  const stream = new BasemapTileStream<TileResource>(async (style, tile: GroundTile, signal) => {
+    const image = await basemapTileImages(style).get(tile.z, tile.x, tile.y, signal);
     if (!image) return null;
     signal.throwIfAborted();
-    const texture = new Texture(app.graphicsDevice, { name: `Earth ${groundTileKey(tile)}`, width: 256, height: 256,
+    const texture = new Texture(app.graphicsDevice, { name: `Earth ${groundTileKey(tile)}`, width: image.width, height: image.height,
       format: PIXELFORMAT_RGBA8, mipmaps: true, flipY: false,
       minFilter: FILTER_LINEAR_MIPMAP_LINEAR, magFilter: FILTER_LINEAR,
       addressU: ADDRESS_CLAMP_TO_EDGE, addressV: ADDRESS_CLAMP_TO_EDGE,
@@ -112,6 +113,13 @@ export function createOrbitEarth(app: PCApp, anchor: { lon: number; lat: number 
       signature = ''; lastUpdate = -Infinity;
     },
     prepare,
+    setStyle(style: BasemapStyle): void {
+      if (disposed || !stream.setStyle(style)) return;
+      for (const key of meshes.keys()) remove(key);
+      baseMaterial.emissive = style === 'dark-vector' ? new Color(.025, .04, .065) : new Color(.035, .075, .13);
+      baseMaterial.update(); signature = ''; lastUpdate = -Infinity;
+      if (started) { stream.setTiles(tiles); sync(); }
+    },
     update(value: number): void {
       if (disposed) return;
       // Refit every frame, even while the tile plan is throttled or the camera

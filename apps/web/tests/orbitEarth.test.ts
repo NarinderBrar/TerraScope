@@ -5,9 +5,12 @@ import { Camera } from '../src/splat/supersplat/camera';
 import { PCApp } from '../src/splat/supersplat/pc-app';
 import { createOrbitEarth } from '../src/map/OrbitEarth';
 import { EARTH_RADIUS } from '../src/map/navigation3D';
-import { groundTileImages } from '../src/splat/GroundTileImages';
+import { basemapTileImages, groundTileImages } from '../src/splat/GroundTileImages';
 
-vi.mock('../src/splat/GroundTileImages', () => ({ groundTileImages: { get: vi.fn(async () => null) } }));
+vi.mock('../src/splat/GroundTileImages', () => {
+  const groundTileImages = { get: vi.fn(async () => null) };
+  return { groundTileImages, basemapTileImages: vi.fn(() => groundTileImages) };
+});
 
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 it('creates the Earth in the same tangent frame and fades it without making another camera', async () => {
@@ -76,5 +79,16 @@ it('renders a single opaque, front-facing patch per tile when the globe is fully
     expect(groundTileImages.get).toHaveBeenCalledTimes(fetches);
     earth.update(.5);
     expect((tiles[0].render!.meshInstances[0].material as StandardMaterial).blendType).toBe(BLEND_NORMAL);
+    const transform = globe.getWorldTransform().clone();
+    earth.setStyle('dark-vector');
+    for (let i = 0; i < 500; i++) await Promise.resolve();
+    expect(basemapTileImages).toHaveBeenCalledWith('dark-vector');
+    const darkFetches = vi.mocked(groundTileImages.get).mock.calls.length;
+    expect(globe.children.filter(child => child.name !== 'Earth background')).toHaveLength(16);
+    expect(globe.getWorldTransform().equals(transform)).toBe(true);
+    earth.setStyle('satellite');
+    expect(groundTileImages.get).toHaveBeenCalledTimes(darkFetches);
+    earth.setStyle('dark-vector');
+    expect(groundTileImages.get).toHaveBeenCalledTimes(darkFetches);
   } finally { earth.dispose(); earth.dispose(); app.destroy(); }
 });

@@ -8,7 +8,10 @@ import { groundTileImages } from '../src/splat/GroundTileImages';
 import { createOrbitEarth } from '../src/map/OrbitEarth';
 import { SKYFALL_SCENES } from '../src/data/splatScenes';
 
-vi.mock('../src/splat/GroundTileImages', () => ({ groundTileImages: { get: vi.fn() } }));
+vi.mock('../src/splat/GroundTileImages', () => {
+  const groundTileImages = { get: vi.fn() };
+  return { groundTileImages, basemapTileImages: vi.fn(() => groundTileImages) };
+});
 const apps: PCApp[] = [];
 function createApp() {
   const canvas = document.createElement('canvas');

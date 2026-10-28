@@ -108,15 +108,19 @@ describe('map-aligned scene lifecycle', () => {
     const toggle = container.querySelector('[role="switch"]') as HTMLInputElement;
     expect(toggle.disabled).toBe(false); expect(toggle.checked).toBe(false);
     expect(container.querySelector('select')).toBeNull();
+    await act(async () => vi.mocked(createSplatSession).mock.calls[0][5]('ready'));
     await act(async () => toggle.click());
     expect(session.setSegmentedEnabled).toHaveBeenLastCalledWith(true);
     expect(toggle.checked).toBe(true);
+    expect(container.querySelector('.splat-map-toggle')?.textContent).toContain('Dark vector map');
+    expect(container.querySelector('.splat-map-attribution')?.textContent).toContain('OpenStreetMap contributors');
     expect(container.querySelector('[aria-label="Segment colours"]')).not.toBeNull();
     expect(container.textContent).toContain('Not detected:');
     expect(container.textContent).toContain('AC units');
     await act(async () => toggle.click());
     expect(session.setSegmentedEnabled).toHaveBeenLastCalledWith(false);
     expect(toggle.checked).toBe(false);
+    expect(container.querySelector('.splat-map-toggle')?.textContent).toContain('Satellite map');
     expect(container.querySelector('[aria-label="Segment colours"]')).toBeNull();
     expect(session.reset).not.toHaveBeenCalled();
     expect(createSplatSession).toHaveBeenCalledOnce();
@@ -131,6 +135,7 @@ describe('map-aligned scene lifecycle', () => {
     await act(async () => toggle.click());
     expect(toggle.checked).toBe(false); expect(toggle.disabled).toBe(false);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('Download failed');
+    expect(container.querySelector('.splat-map-toggle')?.textContent).toContain('Satellite map');
     await act(async () => toggle.click());
     expect(toggle.checked).toBe(true);
   });

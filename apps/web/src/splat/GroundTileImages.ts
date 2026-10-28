@@ -1,3 +1,4 @@
+import { fetchDarkVectorTile, type BasemapStyle } from '../map/darkVectorTiles';
 import { fetchWorldImageryTile } from '../map/worldImagery';
 
 async function decodeTile(z: number, x: number, y: number, signal: AbortSignal): Promise<HTMLCanvasElement | null> {
@@ -69,3 +70,6 @@ export class GroundTileImages {
 }
 
 export const groundTileImages = new GroundTileImages();
+
+const darkVectorImages = new GroundTileImages(64, fetchDarkVectorTile);
+export const basemapTileImages = (style: BasemapStyle): GroundTileImages => style === 'dark-vector' ? darkVectorImages : groundTileImages;

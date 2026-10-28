@@ -41,3 +41,35 @@ Tests cover all 12 packed atlas hashes and class counts, metadata mismatches,
 normal appearance restoration, download retry, delayed enable cancellation,
 and dashboard toggling without scene recreation or camera resets. NullGraphicsDevice
 tests do not execute GPU shaders; WebGPU/WebGL visual confirmation remains manual.
+
+## Dark vector basemap
+
+Segmented view selects a dark cartographic basemap on both the registered ground
+and globe; normal appearance restores Esri satellite imagery. The map checkbox
+and attribution follow the selected style and preserve the user's visibility
+choice. A failed classification load leaves the satellite style selected.
+
+The basemap fetches actual MVT/PBF geometry from the
+[Esri World Basemap vector service](https://basemaps.arcgis.com/arcgis/rest/services/World_Basemap_v2/VectorTileServer),
+using the endpoint documented in [Esri's custom basemap guide](https://developers.arcgis.com/documentation/mapping-and-location-services/mapping/basemaps/custom-basemap-styles/).
+A small geometry-only decoder follows the [MVT 2.1 specification](https://github.com/mapbox/vector-tile-spec/tree/master/2.1).
+Land, parks, water, building footprints and roads receive a restrained dark
+palette. Labels and symbols are omitted to keep the holograms legible. Vector
+geometry is drawn locally to 512 px canvases and uploaded to the existing
+georeferenced ground/globe meshes; it does not create a second camera or map
+canvas. Detail overzoom redraws source geometry into the precise geographic
+subregion. The source endpoint is currently capped at zoom 16 with bounded parent
+fallback. Unavailable data reports a map failure instead of reverting silently
+to satellite imagery.
+
+Decoded dark tiles have their own 64-tile cache (64 MiB); GPU residency is bounded
+separately for each style. Switching cancels requests for the previous style,
+removes its meshes and reuses cached resources when switching back. Late
+responses cannot bind satellite tiles to the dark style. Registration, splat
+streaming and camera position are unaffected.
+
+Tests exercise MVT geometry/rings/holes, malformed input, feature styling, exact
+parent cropping, aborts, asynchronous style isolation, cached restoration, ground
+and globe switching, and dashboard labels/attribution. Live service access and GPU
+visuals require a network-enabled browser; this execution environment cannot
+resolve the tile service hostname.

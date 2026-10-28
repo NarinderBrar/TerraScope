@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { BLEND_NONE, BLEND_NORMAL, Mat4, Vec3, type StandardMaterial } from 'playcanvas';
 import { createGroundMap } from '../src/splat/GroundMapLayer';
+import { fetchDarkVectorTile } from '../src/map/darkVectorTiles';
 import { fetchWorldImageryTile } from '../src/map/worldImagery';
 import { SKYFALL_SCENES } from '../src/data/splatScenes';
 import type { PCApp } from '../src/splat/supersplat/pc-app';
@@ -8,6 +9,7 @@ import type { Camera } from '../src/splat/supersplat/camera';
 import type { Entity } from 'playcanvas';
 
 const resources = vi.hoisted(() => ({ textures: [] as { destroy: ReturnType<typeof vi.fn> }[], meshes: [] as { destroy: ReturnType<typeof vi.fn> }[], visibleMaterials: [] as StandardMaterial[] }));
+vi.mock('../src/map/darkVectorTiles', async importOriginal => ({ ...await importOriginal<typeof import('../src/map/darkVectorTiles')>(), fetchDarkVectorTile: vi.fn() }));
 vi.mock('../src/map/worldImagery', () => ({ fetchWorldImageryTile: vi.fn(), WORLD_IMAGERY_MAX_ZOOM: 20 }));
 vi.mock('playcanvas', async (importOriginal) => {
   const original = await importOriginal<typeof import('playcanvas')>();
@@ -81,6 +83,20 @@ it('streams new imagery with the camera, resumes after hiding, and destroys GPU 
   await settle();
   expect(vi.mocked(fetchWorldImageryTile).mock.calls.length).toBeGreaterThan(before);
   expect(resources.textures.length).toBeLessThanOrEqual(256);
+  const satelliteDownloads = vi.mocked(fetchWorldImageryTile).mock.calls.length;
+  const darkCanvas = { width: 512, height: 512 } as HTMLCanvasElement;
+  vi.mocked(fetchDarkVectorTile).mockResolvedValue(darkCanvas);
+  layer.setStyle!('dark-vector');
+  await settle();
+  expect(fetchDarkVectorTile).toHaveBeenCalled();
+  expect(resources.visibleMaterials.at(-1)!.name).toContain('dark-vector');
+  expect(fetchWorldImageryTile).toHaveBeenCalledTimes(satelliteDownloads);
+  const darkDownloads = vi.mocked(fetchDarkVectorTile).mock.calls.length;
+  layer.setStyle!('satellite'); await settle();
+  expect(resources.visibleMaterials.at(-1)!.name).toContain('satellite');
+  expect(fetchWorldImageryTile).toHaveBeenCalledTimes(satelliteDownloads);
+  layer.setStyle!('dark-vector'); await settle();
+  expect(fetchDarkVectorTile).toHaveBeenCalledTimes(darkDownloads);
   layer.dispose();
   layer.dispose();
   for (const texture of resources.textures) expect(texture.destroy).toHaveBeenCalledOnce();

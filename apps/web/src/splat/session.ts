@@ -137,6 +137,7 @@ export async function createSplatSession(
       modelRoot.setLocalScale(scale, scale, 1);
     });
     let planetBlend = 0, planetOffset = 0, mapVisible = true, groundVisible = true, tilesReady = false;
+    let segmentChange = 0;
     buildingGlow = createLangSplatBuildingGlow(app, modelRoot, model, meta.id, indexController.signal,
       [resource.aabb.center.z - resource.aabb.halfExtents.z, resource.aabb.center.z + resource.aabb.halfExtents.z], metresPerUnit);
     const reloadMap = (): void => {
@@ -192,7 +193,13 @@ export async function createSplatSession(
       },
       reloadMap,
       retryDetail: () => chunks?.retry(),
-      setSegmentedEnabled: (enabled) => buildingGlow?.setSegmentedEnabled(enabled) ?? Promise.resolve(),
+      setSegmentedEnabled: async (enabled) => {
+        const change = ++segmentChange;
+        await buildingGlow?.setSegmentedEnabled(enabled);
+        if (disposed || change !== segmentChange) return;
+        const style = enabled ? 'dark-vector' : 'satellite';
+        groundMap?.setStyle?.(style); earth?.setStyle(style);
+      },
       setBuildingsEnabled: (enabled) => buildingGlow?.setEnabled(enabled) ?? Promise.resolve(),
       setGlowCategory: (category) => buildingGlow?.setCategory(category) ?? Promise.resolve(),
       setMapVisible: (visible) => { mapVisible = visible; groundVisible = visible && planetBlend < 1; groundMap?.setVisible(groundVisible); },

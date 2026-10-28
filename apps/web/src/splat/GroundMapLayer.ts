@@ -5,15 +5,16 @@ import {
 import type { PCApp } from './supersplat/pc-app';
 import type { Camera } from './supersplat/camera';
 import type { SplatGeoreference } from '../data/splatGeoreference';
-import { groundTileImages } from './GroundTileImages';
-import { GroundTileStream } from './GroundTileStream';
+import { basemapTileImages } from './GroundTileImages';
+import { BasemapTileStream } from './BasemapTileStream';
+import type { BasemapStyle } from '../map/darkVectorTiles';
 import { groundTileKey, groundTileUvs, planGroundTiles, type GroundTile, type Point3, type VisibleGroundTile } from './groundTilePlan';
 
-export interface GroundMapLayer { update(): void; retry(): void; setReference?(reference: SplatGeoreference): void; setVisible(visible: boolean): void; setOpacity?(value: number): void; dispose(): void }
+export interface GroundMapLayer { update(): void; retry(): void; setStyle?(style: BasemapStyle): void; setReference?(reference: SplatGeoreference): void; setVisible(visible: boolean): void; setOpacity?(value: number): void; dispose(): void }
 export type GroundMapStatus = 'loading' | 'ready' | 'unavailable';
 interface TileResource { texture: Texture; material: StandardMaterial }
 
-/** Camera-driven Esri quadtree rendered in the splat's fixed, registered frame. */
+/** Camera-driven basemap quadtree rendered in the registered geographic frame. */
 export function createGroundMap(
   app: PCApp, modelRoot: Entity, reference: SplatGeoreference, camera: Camera,
   onStatus: (status: GroundMapStatus) => void,
@@ -41,12 +42,12 @@ export function createGroundMap(
     material.opacity = opacity;
     material.update();
   };
-  const load = async (tile: GroundTile, signal: AbortSignal): Promise<TileResource | null> => {
-    const canvas = await groundTileImages.get(tile.z, tile.x, tile.y, signal);
+  const load = async (style: BasemapStyle, tile: GroundTile, signal: AbortSignal): Promise<TileResource | null> => {
+    const canvas = await basemapTileImages(style).get(tile.z, tile.x, tile.y, signal);
     if (!canvas) return null;
     signal.throwIfAborted();
     const texture = new Texture(app.graphicsDevice, {
-      name: `Satellite ${groundTileKey(tile)}`, width: 256, height: 256,
+      name: `${style} ${groundTileKey(tile)}`, width: canvas.width, height: canvas.height,
       format: PIXELFORMAT_RGBA8, mipmaps: true, flipY: false,
       anisotropy: Math.min(16, app.graphicsDevice.maxAnisotropy || 1),
       minFilter: FILTER_LINEAR_MIPMAP_LINEAR, magFilter: FILTER_LINEAR,
@@ -112,7 +113,7 @@ export function createGroundMap(
       app.once('frameend', () => { if (!disposed && status === next) onStatus(next); });
     }
   };
-  const stream = new GroundTileStream(load, ({ material, texture }) => { material.destroy(); texture.destroy(); }, sync);
+  const stream = new BasemapTileStream(load, ({ material, texture }) => { material.destroy(); texture.destroy(); }, sync);
   const tuple = (value: Vec3): Point3 => [value.x, value.y, value.z];
   const update = (): void => {
     if (disposed || !visible) return;
@@ -143,6 +144,13 @@ export function createGroundMap(
   update();
   return {
     update,
+    setStyle: style => {
+      if (disposed || !stream.setStyle(style)) return;
+      // Never leave a satellite tile bound while the dark map is selected.
+      for (const key of meshes.keys()) removeMesh(key);
+      status = 'loading'; onStatus(status);
+      signature = ''; lastUpdate = -Infinity; update();
+    },
     setReference: next => {
       reference = next; revision++; signature = ''; lastUpdate = -Infinity; update();
     },

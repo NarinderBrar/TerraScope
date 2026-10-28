@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GeoBounds, SplatSceneMeta } from '../data/splatScenes';
 import type { SplatSession } from './session';
 import type { GroundMapStatus } from './GroundMapLayer';
+import { DARK_VECTOR_ATTRIBUTION } from '../map/darkVectorTiles';
 import { WORLD_IMAGERY_ATTRIBUTION } from '../map/worldImagery';
 import type { SplatStreamStatus } from './sogChunk';
 import { SegmentedViewControl } from './SegmentedViewControl';
@@ -27,11 +28,16 @@ export function SplatView({ active, sceneMeta, entryBounds, entryOrientation, on
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mapVisible, setMapVisible] = useState(true);
+  const [segmented, setSegmented] = useState(false);
   const mapVisibleRef = useRef(true);
   const [mapStatus, setMapStatus] = useState<GroundMapStatus>('loading');
   const [streamStatus, setStreamStatus] = useState<SplatStreamStatus | null>(null);
-  const setSegmentedEnabled = useCallback((enabled: boolean): Promise<void> =>
-    sessionRef.current?.setSegmentedEnabled?.(enabled) ?? Promise.reject(new Error('Viewer is not ready.')), []);
+  const setSegmentedEnabled = useCallback(async (enabled: boolean): Promise<void> => {
+    const session = sessionRef.current;
+    if (!session?.setSegmentedEnabled) throw new Error('Viewer is not ready.');
+    await session.setSegmentedEnabled(enabled);
+    if (sessionRef.current === session) setSegmented(enabled);
+  }, []);
   const close = useCallback(() => onClose(sessionRef.current?.getMapView?.() ?? undefined), [onClose]);
 
   useEffect(() => {
@@ -40,6 +46,7 @@ export function SplatView({ active, sceneMeta, entryBounds, entryOrientation, on
     const controller = new AbortController();
     let session: SplatSession | undefined;
     setLoading(true);
+    setSegmented(false);
     setError(null);
     setProgress(undefined);
     setStatus('Starting 3D viewer…');
@@ -100,6 +107,8 @@ export function SplatView({ active, sceneMeta, entryBounds, entryOrientation, on
   }, [active, ready, sceneMeta.id, attempt]);
   const segmentMetadata = segments?.scene === sceneMeta.id ? segments : null;
 
+  const mapName = segmented ? 'Dark vector map' : 'Satellite map';
+
   return (
     <div className={`splat-view-direct${active ? ' active' : ''}`} aria-hidden={!active} data-splat-engine="supersplat" data-ready={ready} data-splat-lod={streamStatus?.bestLod ?? undefined}>
       <canvas ref={canvasRef} className={`splat-canvas${entryOrientation ? ' from-3d' : ''}${ready ? ' ready' : ''}`} aria-label={`Interactive 3D Gaussian splat of ${sceneMeta.name}`} tabIndex={0} />
@@ -111,7 +120,7 @@ export function SplatView({ active, sceneMeta, entryBounds, entryOrientation, on
           setMapVisible(visible);
           mapVisibleRef.current = visible;
           sessionRef.current?.setMapVisible(visible);
-        }} />Satellite map</label>
+        }} />{mapName}</label>
         {active && ready && <SegmentedViewControl key={`segments-${sceneMeta.id}-${attempt}`} metadata={segmentMetadata} setEnabled={setSegmentedEnabled} />}
         {!loading && streamStatus && <span className="splat-detail-status" role="status">
           LOD {streamStatus.bestLod ?? 3} · {streamStatus.failed ? 'Some detail unavailable' : streamStatus.pending ? 'Refining…' : 'Ready'}
@@ -122,11 +131,11 @@ export function SplatView({ active, sceneMeta, entryBounds, entryOrientation, on
       {loading && <div className="splat-message" role="status"><p>{status}</p><progress max={1} value={progress} /></div>}
       {error && <div className="splat-message" role="alert"><p>Unable to load this 3D scene: {error}</p><button type="button" onClick={() => setAttempt((n) => n + 1)}>Retry</button></div>}
       {mapVisible && !loading && !error && <div className="splat-map-status" role="status" data-map-status={mapStatus}>
-        {mapStatus === 'loading' ? 'Loading satellite map…' : mapStatus === 'ready' ? 'Satellite map · imagery aligned' : <><span>Satellite map unavailable</span> <button type="button" onClick={() => sessionRef.current?.reloadMap()}>Retry map</button></>}
+        {mapStatus === 'loading' ? `Loading ${mapName.toLowerCase()}…` : mapStatus === 'ready' ? `${mapName} · ${segmented ? 'aligned' : 'imagery aligned'}` : <><span>{mapName} unavailable</span> <button type="button" onClick={() => sessionRef.current?.reloadMap()}>Retry map</button></>}
       </div>}
       <div className="splat-help">Drag to pan · right-drag to orbit · scroll to zoom · Esc to return</div>
       <a className="splat-attribution" href="https://huggingface.co/jayinnn/Skyfall-GS-ply" target="_blank" rel="noreferrer">Skyfall-GS models · Apache-2.0</a>
-      {mapVisible && mapStatus === 'ready' && <span className="splat-map-attribution">{WORLD_IMAGERY_ATTRIBUTION}</span>}
+      {mapVisible && mapStatus === 'ready' && <span className="splat-map-attribution">{segmented ? DARK_VECTOR_ATTRIBUTION : WORLD_IMAGERY_ATTRIBUTION}</span>}
     </div>
   );
 }

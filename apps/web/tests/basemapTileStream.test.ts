@@ -1,0 +1,28 @@
+import { expect, it, vi } from 'vitest';
+import { BasemapTileStream } from '../src/splat/BasemapTileStream';
+import type { BasemapStyle } from '../src/map/darkVectorTiles';
+const settle = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
+it('isolates style residency, ignores late satellite downloads, and reuses cached styles', async () => {
+  const loads: { style: BasemapStyle; signal: AbortSignal; complete(value: string): void }[] = [];
+  const load = vi.fn((style: BasemapStyle, _tile: unknown, signal: AbortSignal) => new Promise<string>(complete => loads.push({ style, signal, complete })));
+  const release = vi.fn(), changed = vi.fn();
+  const stream = new BasemapTileStream(load, release, changed);
+  const tile = { z: 0, x: 0, y: 0 };
+  stream.setTiles([tile]);
+  stream.setStyle('dark-vector'); stream.setTiles([tile]);
+  expect(loads[0].signal.aborted).toBe(true);
+  loads[0].complete('late satellite'); await settle();
+  expect(stream.find(tile)).toBeUndefined(); expect(changed).not.toHaveBeenCalled();
+  expect(release).toHaveBeenCalledWith('late satellite');
+  loads[1].complete('dark roads'); await settle();
+  expect(stream.find(tile)?.value).toBe('dark roads');
+  stream.setStyle('satellite'); stream.setTiles([tile]);
+  loads[2].complete('satellite'); await settle();
+  stream.setStyle('dark-vector'); stream.setTiles([tile]);
+  expect(stream.find(tile)?.value).toBe('dark roads');
+  stream.setStyle('satellite'); stream.setTiles([tile]);
+  expect(stream.find(tile)?.value).toBe('satellite');
+  expect(load).toHaveBeenCalledTimes(3);
+  stream.dispose();
+  expect(release.mock.calls.map(([value]) => value).sort()).toEqual(['dark roads', 'late satellite', 'satellite']);
+});
