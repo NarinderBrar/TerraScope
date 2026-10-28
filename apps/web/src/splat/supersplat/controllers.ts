@@ -18,6 +18,7 @@ class PointerController {
 
         // Orbit mode: rotate camera around the focal point
         const orbit = (dx: number, dy: number) => {
+            if (camera.surfaceControls) { camera.surfaceControls.orbit(dx, dy); return; }
             const azim = camera.azim - dx * camera.scene.config.controls.orbitSensitivity;
             const elev = camera.elevation - dy * camera.scene.config.controls.orbitSensitivity;
             camera.setAzimElev(azim, elev);
@@ -28,6 +29,7 @@ class PointerController {
         };
 
         const pan = (x: number, y: number, dx: number, dy: number) => {
+            if (camera.surfaceControls) { camera.surfaceControls.pan(x, y, dx, dy); return; }
             // For panning to work at any zoom level, we use screen point to world projection
             // to work out how far we need to pan the pivotEntity in world space
             const c = camera.camera;
@@ -178,13 +180,13 @@ class PointerController {
 
                     let mod: 'orbit' | 'pan' | 'zoom';
                     if (pressedButton === 2) {
-                        mod = event.shiftKey || event.ctrlKey ? 'orbit' :
+                        mod = camera.surfaceControls ? (event.altKey || event.metaKey ? 'zoom' : 'orbit') : event.shiftKey || event.ctrlKey ? 'orbit' :
                             (event.altKey || event.metaKey ? 'zoom' : 'pan');
                     } else if (pressedButton === 1) {
                         mod = event.shiftKey ? 'pan' :
                             (event.ctrlKey ? 'zoom' : 'orbit');
                     } else {
-                        mod = 'orbit';
+                        mod = camera.surfaceControls && !event.shiftKey && !event.ctrlKey ? 'pan' : 'orbit';
                     }
 
                     if (mod === 'orbit') {
@@ -211,7 +213,8 @@ class PointerController {
                     if (camera.controlMode === 'fly') {
                         look(dx, dy);
                     } else {
-                        orbit(dx, dy);
+                        if (camera.surfaceControls) pan(event.offsetX, event.offsetY, dx, dy);
+                        else orbit(dx, dy);
                     }
                 } else if (touches.length === 2) {
                     const touch = touches[touches.map(t => t.id).indexOf(event.pointerId)];

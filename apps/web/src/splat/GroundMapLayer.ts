@@ -9,7 +9,7 @@ import { groundTileImages } from './GroundTileImages';
 import { GroundTileStream } from './GroundTileStream';
 import { groundTileKey, groundTileUvs, planGroundTiles, type GroundTile, type Point3, type VisibleGroundTile } from './groundTilePlan';
 
-export interface GroundMapLayer { update(): void; retry(): void; setVisible(visible: boolean): void; setOpacity?(value: number): void; dispose(): void }
+export interface GroundMapLayer { update(): void; retry(): void; setReference?(reference: SplatGeoreference): void; setVisible(visible: boolean): void; setOpacity?(value: number): void; dispose(): void }
 export type GroundMapStatus = 'loading' | 'ready' | 'unavailable';
 interface TileResource { texture: Texture; material: StandardMaterial }
 
@@ -21,7 +21,8 @@ export function createGroundMap(
   const root = new Entity('Streaming satellite ground', app);
   modelRoot.addChild(root);
   const inverse = new Mat4();
-  const meshes = new Map<string, { entity: Entity; mesh: Mesh; instance: MeshInstance; source: string }>();
+  const meshes = new Map<string, { entity: Entity; mesh: Mesh; instance: MeshInstance; source: string; revision: number }>();
+  let revision = 0;
   let tiles: VisibleGroundTile[] = [];
   let visible = true;
   let opacity = 1;
@@ -90,7 +91,7 @@ export function createGroundMap(
         const entity = new Entity(`Ground ${key}`, app);
         entity.addComponent('render', { meshInstances: [instance] });
         root.addChild(entity);
-        entry = { entity, mesh, instance, source: sourceKey };
+        entry = { entity, mesh, instance, source: sourceKey, revision };
         meshes.set(key, entry);
       } else if (entry.source !== sourceKey) {
         applyOpacity(source.value.material);
@@ -98,6 +99,9 @@ export function createGroundMap(
         entry.mesh.setUvs(0, groundTileUvs(tile, source.tile));
         entry.mesh.update(PRIMITIVE_TRIANGLES);
         entry.source = sourceKey;
+      }
+      if (entry.revision !== revision) {
+        entry.mesh.setPositions(tile.corners.flat()); entry.mesh.update(PRIMITIVE_TRIANGLES); entry.revision = revision;
       }
     }
     for (const key of meshes.keys()) if (!keep.has(key)) removeMesh(key);
@@ -139,6 +143,9 @@ export function createGroundMap(
   update();
   return {
     update,
+    setReference: next => {
+      reference = next; revision++; signature = ''; lastUpdate = -Infinity; update();
+    },
     setOpacity: value => {
       if (opacity === value) return;
       opacity = Math.max(0, Math.min(1, value));

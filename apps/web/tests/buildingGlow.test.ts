@@ -49,6 +49,9 @@ it('loads real LangSplat evidence and modifies original splat colors without cha
     const inverse = new Mat4().set(Array.from(component.getParameter('buildingGlowWorldToModel') as Float32Array));
     const source = new Vec3(10, 20, -25);
     expect(inverse.transformPoint(before.transformPoint(source)).distance(source)).toBeLessThan(1e-5);
+    root.setLocalPosition(12, 0, 4); glow.update(0);
+    const movedInverse = new Mat4().set(Array.from(component.getParameter('buildingGlowWorldToModel') as Float32Array));
+    expect(movedInverse.transformPoint(root.getWorldTransform().transformPoint(source)).distance(source)).toBeLessThan(1e-5);
     const texture = component.getParameter('buildingGlowMask') as unknown as { width: number; height: number };
     expect(texture.width).toBe(2048); expect(texture.height).toBe(2048);
     const initial = component.getParameter('buildingGlowPulse');

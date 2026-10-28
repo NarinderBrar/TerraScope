@@ -17,6 +17,53 @@ uniform float buildingGlowActive;
 uniform vec3 buildingGlowTint;
 uniform float buildingRevealZ;
 uniform float buildingRevealFeather;
+
+uniform sampler2D segmentMask;
+uniform float segmentActive;
+uniform vec3 segmentMin;
+uniform vec3 segmentInvSpan;
+uniform vec3 segmentGrid;
+uniform vec2 segmentAtlas;
+uniform float segmentTime;
+uniform float segmentMotion;
+bool applySegments(vec3 local, inout vec4 color) {
+    if (segmentActive < 0.5) return false;
+    float grey = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+    color.rgb = vec3(grey * 0.3);
+    vec3 p = (local - segmentMin) * segmentInvSpan;
+    if (any(lessThan(p, vec3(0.0))) || any(greaterThan(p, vec3(1.0)))) return true;
+    vec3 grid = floor(p * (segmentGrid - vec3(1.0)) + 0.5);
+    vec2 tile = vec2(mod(grid.z, 8.0), floor(grid.z / 8.0));
+    float id = floor(texture2D(segmentMask, (tile * segmentGrid.xy + grid.xy + 0.5) / segmentAtlas).r * 255.0 + 0.5);
+    if (id < 0.5 || id > 5.5) return true;
+    vec3 tint = vec3(0.1, 0.65, 1.0);
+    if (id > 1.5) tint = vec3(0.1, 1.0, 0.25);
+    if (id > 2.5) tint = vec3(1.0, 0.6, 0.05);
+    if (id > 3.5) tint = vec3(1.0, 0.2, 0.65);
+    if (id > 4.5) tint = vec3(0.6, 0.3, 1.0);
+    float pulse = mix(0.8, 0.7 + 0.3 * cos(segmentTime * 3.4906585 + id * 1.2566371), segmentMotion);
+    // Apply the hologram to every classified category in registered model metres.
+    vec3 metres = local * buildingGlowMetresPerUnit;
+    vec3 spacing = id < 1.5 ? vec3(4.0, 4.0, 3.0) : vec3(2.0, 2.0, 1.5);
+    vec3 phase = fract(metres / spacing);
+    vec3 lineDistance = min(phase, vec3(1.0) - phase) * spacing;
+    float verticalLine = 1.0 - smoothstep(0.12, 0.42, min(lineDistance.x, lineDistance.y));
+    float floorLine = 1.0 - smoothstep(0.12, 0.42, lineDistance.z);
+    float scanTime = segmentTime * segmentMotion;
+    float scanDistance = abs(fract(metres.z / 24.0 - scanTime * 0.28) - 0.5) * 24.0;
+    float scan = 1.0 - smoothstep(0.25, 2.2, scanDistance);
+    float scanCore = 1.0 - smoothstep(0.15, 0.65, scanDistance);
+    float columnOffset = dot(floor(metres.xy / spacing.xy), vec2(0.17, 0.11));
+    float travel = fract(metres.z / 18.0 - scanTime * 0.22 + columnOffset);
+    float trail = verticalLine * smoothstep(0.55, 1.0, travel);
+    float stripes = 0.5 + 0.5 * cos(metres.z * 10.4719755);
+    float energy = clamp(max(verticalLine, floorLine) * 0.55 + scan * 0.55 + scanCore * 0.45 + trail * 0.45, 0.0, 1.0);
+    vec3 neon = mix(tint, vec3(1.0), 0.18);
+    color.rgb = tint * pulse * 0.65
+        + neon * pulse * (0.12 + energy * 0.95 + stripes * 0.08);
+    return true;
+}
+
 float buildingSlice(vec2 xy, float z) {
     vec2 tile = vec2(mod(z, 8.0), floor(z / 8.0));
     return texture2D(buildingGlowMask, (tile * buildingGlowGridSize.xy + xy + 0.5) / buildingGlowAtlasSize).r;
@@ -26,6 +73,7 @@ void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout ve
 void modifySplatColor(vec3 center, inout vec4 color) {
     vec3 local = (buildingGlowWorldToModel * vec4(center, 1.0)).xyz;
     color.a *= 1.0 - smoothstep(buildingRevealZ - buildingRevealFeather, buildingRevealZ, local.z);
+    if (applySegments(local, color)) return;
     if (buildingGlowActive < 0.5) return;
     if (local.z < buildingGlowMinZ) return;
     vec3 p = (local - buildingGlowMin) * buildingGlowInvSpan;
@@ -81,6 +129,54 @@ uniform buildingGlowActive: f32;
 uniform buildingGlowTint: vec3f;
 uniform buildingRevealZ: f32;
 uniform buildingRevealFeather: f32;
+
+var segmentMask: texture_2d<f32>;
+var segmentMaskSampler: sampler;
+uniform segmentActive: f32;
+uniform segmentMin: vec3f;
+uniform segmentInvSpan: vec3f;
+uniform segmentGrid: vec3f;
+uniform segmentAtlas: vec2f;
+uniform segmentTime: f32;
+uniform segmentMotion: f32;
+fn applySegments(local: vec3f, color: ptr<function, vec4f>) -> bool {
+    if (uniform.segmentActive < 0.5) { return false; }
+    let grey = dot((*color).rgb, vec3f(0.2126, 0.7152, 0.0722));
+    (*color) = vec4f(vec3f(grey * 0.3), (*color).a);
+    let p = (local - uniform.segmentMin) * uniform.segmentInvSpan;
+    if (any(p < vec3f(0.0)) || any(p > vec3f(1.0))) { return true; }
+    let grid = floor(p * (uniform.segmentGrid - vec3f(1.0)) + 0.5);
+    let tile = vec2f(grid.z - floor(grid.z / 8.0) * 8.0, floor(grid.z / 8.0));
+    let id = floor(textureSampleLevel(segmentMask, segmentMaskSampler, (tile * uniform.segmentGrid.xy + grid.xy + 0.5) / uniform.segmentAtlas, 0.0).r * 255.0 + 0.5);
+    if (id < 0.5 || id > 5.5) { return true; }
+    var tint = vec3f(0.1, 0.65, 1.0);
+    if (id > 1.5) { tint = vec3f(0.1, 1.0, 0.25); }
+    if (id > 2.5) { tint = vec3f(1.0, 0.6, 0.05); }
+    if (id > 3.5) { tint = vec3f(1.0, 0.2, 0.65); }
+    if (id > 4.5) { tint = vec3f(0.6, 0.3, 1.0); }
+    let pulse = mix(0.8, 0.7 + 0.3 * cos(uniform.segmentTime * 3.4906585 + id * 1.2566371), uniform.segmentMotion);
+    // Keep the WebGPU appearance equivalent to the WebGL hologram.
+    let metres = local * uniform.buildingGlowMetresPerUnit;
+    let spacing = select(vec3f(2.0, 2.0, 1.5), vec3f(4.0, 4.0, 3.0), id < 1.5);
+    let phase = fract(metres / spacing);
+    let lineDistance = min(phase, vec3f(1.0) - phase) * spacing;
+    let verticalLine = 1.0 - smoothstep(0.12, 0.42, min(lineDistance.x, lineDistance.y));
+    let floorLine = 1.0 - smoothstep(0.12, 0.42, lineDistance.z);
+    let scanTime = uniform.segmentTime * uniform.segmentMotion;
+    let scanDistance = abs(fract(metres.z / 24.0 - scanTime * 0.28) - 0.5) * 24.0;
+    let scan = 1.0 - smoothstep(0.25, 2.2, scanDistance);
+    let scanCore = 1.0 - smoothstep(0.15, 0.65, scanDistance);
+    let columnOffset = dot(floor(metres.xy / spacing.xy), vec2f(0.17, 0.11));
+    let travel = fract(metres.z / 18.0 - scanTime * 0.22 + columnOffset);
+    let trail = verticalLine * smoothstep(0.55, 1.0, travel);
+    let stripes = 0.5 + 0.5 * cos(metres.z * 10.4719755);
+    let energy = clamp(max(verticalLine, floorLine) * 0.55 + scan * 0.55 + scanCore * 0.45 + trail * 0.45, 0.0, 1.0);
+    let neon = mix(tint, vec3f(1.0), 0.18);
+    (*color) = vec4f(tint * pulse * 0.65
+        + neon * pulse * (0.12 + energy * 0.95 + stripes * 0.08), (*color).a);
+    return true;
+}
+
 fn buildingSlice(xy: vec2f, z: f32) -> f32 {
     let tile = vec2f(z - floor(z / 8.0) * 8.0, floor(z / 8.0));
     return textureSampleLevel(buildingGlowMask, buildingGlowMaskSampler, (tile * uniform.buildingGlowGridSize.xy + xy + 0.5) / uniform.buildingGlowAtlasSize, 0.0).r;
@@ -90,6 +186,7 @@ fn modifySplatRotationScale(originalCenter: vec3f, modifiedCenter: vec3f, rotati
 fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>) {
     let local = (uniform.buildingGlowWorldToModel * vec4f(center, 1.0)).xyz;
     (*color).a *= 1.0 - smoothstep(uniform.buildingRevealZ - uniform.buildingRevealFeather, uniform.buildingRevealZ, local.z);
+    if (applySegments(local, color)) { return; }
     if (uniform.buildingGlowActive < 0.5) { return; }
     if (local.z < uniform.buildingGlowMinZ) { return; }
     let p = (local - uniform.buildingGlowMin) * uniform.buildingGlowInvSpan;

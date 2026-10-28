@@ -9,6 +9,8 @@ preview mode. See the [scene catalog and registration evidence](docs/SKYFALL_EXP
 
 ## What works
 
+- Continuous map navigation: drag to pan, right-drag to orbit, and zoom out to
+  transition automatically into the globe. No 2D/3D switch is required.
 - **Urban Lab** inside registered 3D scenes: OpenStreetMap buildings, roads, trees,
   stops and crossings; animated simulated traffic; sun and pedestrian shade;
   before/proposed road closures, signal-capacity assumptions, bus lanes and mature

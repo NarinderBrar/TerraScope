@@ -1,0 +1,70 @@
+{
+  "scene": "JAX_004",
+  "coordinateFrame": "registered-model-local",
+  "sourceSha256": "5cff57f7bc5bcea0ec068a7d79b388957ee1478e11422255a299f73b189883a0",
+  "boundsMin": [
+    -394.877197265625,
+    -431.0021667480469,
+    -51.525177001953125
+  ],
+  "boundsMax": [
+    391.8033447265625,
+    432.5401306152344,
+    89.35884094238281
+  ],
+  "gridSize": [
+    512,
+    512,
+    64
+  ],
+  "atlasSize": [
+    4096,
+    4096
+  ],
+  "byteLength": 16777216,
+  "minimumLocalZ": -52.525177001953125,
+  "schemaVersion": 1,
+  "kind": "langsplat-segmented-view",
+  "asset": "JAX_004-segments.bin",
+  "assetSha256": "678f2b6233440b23669c050c5068d54b7f7c051e6152a6414a69e6a8900384d4",
+  "classes": [
+    {
+      "id": 1,
+      "category": "buildings",
+      "sourceAssetSha256": "673c8204e90da3cc1db10fde77d8d829731c4c8b755ca717cf3064aa0ec2f04b",
+      "metadataSha256": "dc0caccd38bb0e36baac80584fb7692407038df6f4dab20b771540b63052fd5e",
+      "voxels": 29064
+    },
+    {
+      "id": 2,
+      "category": "vegetation",
+      "sourceAssetSha256": "b7d8f69487e3595ef95f2c40fb5d282873cb3777caee8f310c4f476b3b2738b2",
+      "metadataSha256": "fd110242d23911ca5d3e69661e771a8b55d59543b5de404db11667b79dd24210",
+      "voxels": 418720
+    },
+    {
+      "id": 3,
+      "category": "roads",
+      "sourceAssetSha256": "8002667a5a388ca1c9985423254893e84cfd163f7d548bc61ca0763dcfce996d",
+      "metadataSha256": "3f2921cc38a6ba9f068d76860d382f4220cb69038f4191e46ba5a8fcfc019fe4",
+      "voxels": 297
+    },
+    {
+      "id": 4,
+      "category": "vehicles",
+      "sourceAssetSha256": "080acf35a507ac9849cfcba47dc2ad83e01b75663a516279c8b9d243b719643e",
+      "metadataSha256": "0a729c27ee1b1ede794f3de2f2fd9c816af3353de12a86274f54ef07e3c5f6dc",
+      "voxels": 0
+    },
+    {
+      "id": 5,
+      "category": "air-conditioning",
+      "sourceAssetSha256": "080acf35a507ac9849cfcba47dc2ad83e01b75663a516279c8b9d243b719643e",
+      "metadataSha256": "174a2679b8b0b48c23a3e01022b0e341cc5985a011c7fc8d5ed560c89296d49e",
+      "voxels": 0
+    }
+  ],
+  "minimumWeight": 6,
+  "classification": "strongest-category; stable ties in class ID order",
+  "limitations": "Experimental similarity classifications. Small objects may be unresolved."
+}

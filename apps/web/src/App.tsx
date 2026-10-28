@@ -1,7 +1,7 @@
 /**
  * The application shell.
  *
- * The explorer shares a geographic camera between 2D, local 3D and zoom-out
+ * The explorer shares a geographic camera between local 3D and zoom-out
  * Earth views, with registered splat scenes opened from geographic footprints.
  * Legacy satellite analysis helpers are retained below but not mounted here.
  */
@@ -19,7 +19,7 @@ import {
 import { selectFramesForView, pickComparisonPair } from './app/comparePlan';
 import { MISSION_START, searchView } from './app/sceneSearch';
 import { RasterClient, RasterError } from './data/RasterClient';
-import { Basemap, BASEMAP_ATTRIBUTION } from './map/Basemap';
+import { BASEMAP_ATTRIBUTION } from './map/Basemap';
 import { SplatFootprints } from './map/SplatFootprints';
 import { hitSplatFootprint } from './map/splatFootprints';
 import { MAX_ZOOM, MIN_ZOOM } from './map/MapCamera';
@@ -106,6 +106,14 @@ export function CanvasAndScene({
   const [inspection, setInspection] = useState<PixelInspection | null>(null);
   const [map3DEntry, setMap3DEntry] = useState<{ bounds: GeoBounds; center: { lon: number; lat: number }; orbit: { x: number; y: number }; orientation?: GeographicView['orientation'] } | null>(null);
   const last3DView = useRef<GeographicView | null>(null);
+  useEffect(() => {
+    if (!scene) return;
+    // Native 3D starts before the asynchronous analysis GPU initialization.
+    // Measure the viewport now so its entry frame cannot have zero extent.
+    scene.resize();
+    last3DView.current = { center: { ...scene.camera.center }, zoom: scene.camera.zoom };
+    setMap3DEntry({ bounds: scene.viewBounds(), center: { ...scene.camera.center }, orbit: { x: 0, y: 0 } });
+  }, [scene]);
   const orbitDrag = useRef<{ pointerId: number; x: number; y: number } | null>(null);
   const lastInspect = useRef(0);
   const [splatScene, setSplatScene] = useState<SplatSceneMeta | null>(null);
@@ -152,8 +160,6 @@ export function CanvasAndScene({
       if (event.key !== 'Escape' || splatScene) return;
       if (map3DEntry) {
         orbitDrag.current = null;
-        if (last3DView.current) scene?.setView(last3DView.current.center, last3DView.current.zoom);
-        setMap3DEntry(null);
       }
       footprintPress.current = null;
       setHoveredSplat(null);
@@ -177,9 +183,8 @@ export function CanvasAndScene({
     preloadSplatViewer();
     // Use the live map viewport, preserving the geographic entry frame.
     setSplatEntryBounds(scene.viewBounds());
-    setSplatEntryOrientation(view?.orientation);
+    setSplatEntryOrientation(view?.orientation ?? { azimuth: 0, elevation: -90 });
     // Retain the live 3D canvas beneath the loading viewer until its first frame.
-    if (!view) setMap3DEntry(null);
     setSplatScene(target);
     setHoveredSplat(null);
     footprintPress.current = null;
@@ -317,8 +322,7 @@ export function CanvasAndScene({
 
   return (
     <div className={`canvas-wrap${splatScene ? ' splat-active' : ''}${map3DEntry ? ' map3d-active' : ''}`} ref={containerRef}>
-      <div className={`map-view-2d${map3DEntry || (splatScene && splatEntryOrientation) ? ' inactive' : ''}`}>
-        {scene && <Basemap scene={scene} />}
+      <div className="map-view-2d inactive" aria-hidden="true" inert>
         <canvas
           ref={canvasRef}
           className={compare.active ? 'map science' : `map${markMode ? ' marking' : ''}${showFootprints && hoveredSplat && !markMode ? ' over-splat' : ''}`}
@@ -343,12 +347,10 @@ export function CanvasAndScene({
       {map3DEntry && <Map3DView bounds={map3DEntry.bounds} center={map3DEntry.center} orbit={map3DEntry.orbit} orientation={map3DEntry.orientation} showFootprints={showFootprints} onReady={finishMapReturn}
         onViewChange={view => { last3DView.current = view; }}
         onOpenFootprint={(target, view) => { scene?.setView(view.center, view.zoom); openSplatScene(target, view); }} />}
-      {splatScene && <SplatView key={splatScene.id} active sceneMeta={splatScene} entryBounds={splatEntryBounds!} entryOrientation={splatEntryOrientation} onReady={finish3DHandoff} onClose={(view, destination = 'map') => {
+      {splatScene && <SplatView key={splatScene.id} active sceneMeta={splatScene} entryBounds={splatEntryBounds!} entryOrientation={splatEntryOrientation} onReady={finish3DHandoff} onClose={view => {
         if (returningToMap) return;
         if (view) scene?.setView(view.center, view.zoom);
-        if (destination === '2d') {
-          setMap3DEntry(null); setSplatScene(null);
-        } else if (!view && map3DEntry) {
+        if (!view && map3DEntry) {
           // Loading was cancelled: the original live map still has its camera.
           setSplatScene(null);
         } else if (scene) {
@@ -361,22 +363,14 @@ export function CanvasAndScene({
       {!splatScene && <aside className="map-controls-panel" aria-label="Map controls">
         <header><strong>TerraScope</strong><span>Map &amp; 3D explorer</span></header>
         {scene && <PlaceSearch near={camera.center} onPick={place => {
-          setMap3DEntry(null);
+          const orientation = last3DView.current?.orientation;
           if (place.bounds) scene.fitBounds(place.bounds);
           else scene.setView({ lon: place.lon, lat: place.lat }, zoomForKind(place.kind));
+          last3DView.current = { center: { ...scene.camera.center }, zoom: scene.camera.zoom, orientation };
+          setMap3DEntry({ bounds: scene.viewBounds(), center: { ...scene.camera.center }, orbit: { x: 0, y: 0 },
+            orientation });
         }} />}
-        <button type="button" className="map-camera-toggle" role="switch" aria-label="3D view" aria-checked={!!map3DEntry}
-          disabled={!scene} onClick={() => {
-            if (!scene) return;
-            if (map3DEntry) {
-              if (last3DView.current) scene.setView(last3DView.current.center, last3DView.current.zoom);
-              setMap3DEntry(null);
-            } else {
-              last3DView.current = { center: { ...scene.camera.center }, zoom: scene.camera.zoom };
-              setMap3DEntry({ bounds: scene.viewBounds(), center: { ...scene.camera.center }, orbit: { x: 0, y: 0 } });
-            }
-          }}><span>2D</span><span className="camera-toggle-track"><span /></span><span>3D</span></button>
-        <p className="map-orbit-hint">Right-drag or middle-drag to orbit.</p>
+        <p className="map-orbit-hint">Drag to pan · right-drag to orbit · zoom out to Earth.</p>
         <select className="urban-scene-select" aria-label="Choose 3D scene" value="" onFocus={preloadSplatViewer} onChange={event => {
           const target = SKYFALL_SCENES.find(candidate => candidate.id === event.target.value);
           if (!target || !scene) return;

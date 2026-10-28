@@ -56,3 +56,26 @@ it('supports regional zoom-out and adjusts the clipping planes with distance', a
   expect(mainCamera.getPosition().y).toBeCloseTo(5);
   expect(camera.camera.nearClip).toBe(.1);
 });
+
+it('routes map left-drag to surface pan and right-drag to anchored orbit', () => {
+  const target = new EventTarget() as EventTarget & { setPointerCapture: () => void; hasPointerCapture: () => boolean };
+  target.setPointerCapture = vi.fn(); target.hasPointerCapture = () => false;
+  vi.stubGlobal('window', new EventTarget());
+  const surfaceControls = { pan: vi.fn(), orbit: vi.fn() };
+  const camera = { surfaceControls, controlMode: 'orbit',
+    scene: { app: { graphicsDevice: { canvas: target } }, events: new EventHandler(), config: { controls: { orbitSensitivity: .2 } } },
+  } as unknown as Camera;
+  const controller = new PointerController(camera, target as unknown as HTMLElement);
+  const pointer = (type: string, button: number, buttons: number, x: number) => {
+    const event = new Event(type);
+    Object.assign(event, { pointerType: 'mouse', pointerId: 1, button, buttons, offsetX: x, offsetY: 20 });
+    target.dispatchEvent(event);
+  };
+  try {
+    pointer('pointerdown', 0, 1, 10); pointer('pointermove', 0, 1, 25); pointer('pointerup', 0, 0, 25);
+    expect(surfaceControls.pan).toHaveBeenCalledWith(25, 20, 15, 0);
+    expect(surfaceControls.orbit).not.toHaveBeenCalled();
+    pointer('pointerdown', 2, 2, 10); pointer('pointermove', 2, 2, 25); pointer('pointerup', 2, 0, 25);
+    expect(surfaceControls.orbit).toHaveBeenCalledWith(15, 0);
+  } finally { controller.destroy(); }
+});

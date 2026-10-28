@@ -1044,17 +1044,18 @@ button.scene.selected {
 .imagery-close { display: block; margin: 12px; }
 .map-3d-view { position: absolute; inset: 0; z-index: 4; background: #05070a; }
 .map-3d-view canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.coverage-3d { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: hidden; }
+.coverage-3d-scene { fill: #22c55e38; stroke: #4ade80; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.coverage-3d-scene circle { fill: #22c55e; stroke: #dcfce7; }
+.coverage-3d-scene:focus { outline: none; fill: #22c55e70; stroke: #fff; stroke-width: 3; }
+.coverage-3d-empty { position: absolute; top: 16px; left: 16px; max-width: calc(100% - 350px); padding: 10px; border-radius: 6px; background: #101b2be8; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.coverage-3d-empty button { padding: 5px 8px; color: #bbf7d0; background: #123323; border: 1px solid #4ade80; border-radius: 4px; cursor: pointer; }
 .map-3d-status, .map-3d-help { position: absolute; left: 16px; max-width: calc(100% - 32px); padding: 6px 9px; background: #101b2be8; border-radius: 5px; font-size: 12px; pointer-events: none; }
 .map-3d-status { bottom: 76px; }
 .map-3d-help { bottom: 40px; }
 .map3d-active > .hud, .map3d-active > .banner, .map3d-active > .pixel-readout { display: none; }
 @media (max-width: 720px) { .map-controls-panel { top: 8px; right: 8px; width: 260px; max-height: 45%; } .imagery-drawer { top: 8px; bottom: 8px; left: 8px; } }
 
-.map-camera-toggle { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; padding: 9px 12px; border: 1px solid #526b83; border-radius: 8px; background: #15263a; color: #eaf2fc; cursor: pointer; }
-.camera-toggle-track { display: inline-flex; width: 42px; height: 24px; padding: 3px; border-radius: 15px; background: #506174; box-sizing: border-box; }
-.camera-toggle-track > span { width: 18px; height: 18px; border-radius: 50%; background: #eef6ff; transform: translateX(0); transition: transform 180ms ease; }
-.map-camera-toggle[aria-checked="true"] .camera-toggle-track { background: #2788c4; }
-.map-camera-toggle[aria-checked="true"] .camera-toggle-track > span { transform: translateX(18px); }
 .splat-controls-overlay.splat-right-panel { top: 16px; right: 16px; left: auto; width: 300px; max-width: calc(100% - 32px); max-height: calc(100% - 48px); overflow-y: auto; display: flex; flex-direction: column; align-items: stretch; gap: 12px; border: 1px solid #425568; border-radius: 12px; box-shadow: 0 8px 30px #0005; }
 .splat-right-panel > div { flex: none; }
 .splat-right-panel header { display: flex; flex-direction: column; gap: 2px; }
@@ -1063,3 +1064,9 @@ button.scene.selected {
 .splat-right-panel .splat-detail-status { flex-wrap: wrap; }
 @media (max-width: 720px) { .splat-controls-overlay.splat-right-panel { top: 8px; right: 8px; width: 260px; max-height: 55%; } }
 .splat-right-panel .urban-lab { position: static; width: 100%; max-width: 100%; max-height: none; padding: 0; margin: 0; border: 0; box-shadow: none; overflow: visible; }
+
+.segmented-view-control { display: grid; gap: .6rem; }
+.segmented-view-control small { color: #a8b8c9; line-height: 1.4; }
+.segment-legend { display: grid; gap: .4rem; padding: 0; margin: 0; list-style: none; }
+.segment-legend li { display: flex; align-items: center; gap: .5rem; font-size: .85rem; }
+.segment-legend li > span { width: .7rem; height: .7rem; border-radius: 50%; }

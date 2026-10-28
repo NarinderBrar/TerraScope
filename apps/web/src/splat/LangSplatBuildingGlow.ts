@@ -1,5 +1,6 @@
 import { ADDRESS_CLAMP_TO_EDGE, FILTER_LINEAR, Mat4, PIXELFORMAT_R8, Texture, type Entity } from 'playcanvas';
 import type { PCApp } from './supersplat/pc-app';
+import { createSegmentedAppearance } from './SegmentedAppearance';
 import { BUILDING_GLOW_GLSL, BUILDING_GLOW_WGSL } from './buildingGlowShaders';
 
 import { parseBuildingGlowMetadata, stemFor, type BuildingGlowMetadata, type GlowCategory } from './glowMetadata';
@@ -25,6 +26,8 @@ export function createLangSplatBuildingGlow(app: PCApp, root: Entity, model: Ent
   const textures = new Set<Texture>();
   const motion = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
   const component = model.gsplat;
+  const segmented = createSegmentedAppearance(app, model, scene, signal);
+  let modelTransform = root.getWorldTransform().clone();
   const names = ['buildingGlowMask', 'buildingGlowWorldToModel', 'buildingGlowMin', 'buildingGlowInvSpan', 'buildingGlowPulse',
     'buildingGlowGridSize', 'buildingGlowAtlasSize', 'buildingGlowTime', 'buildingGlowKind', 'buildingGlowMetresPerUnit',
     'buildingGlowMinZ', 'buildingGlowCutoff', 'buildingGlowActive', 'buildingGlowTint', 'buildingRevealZ', 'buildingRevealFeather'];
@@ -93,6 +96,11 @@ export function createLangSplatBuildingGlow(app: PCApp, root: Entity, model: Ent
     time = 0; active = true;
   };
   return {
+    async setSegmentedEnabled(enabled: boolean): Promise<void> {
+      desired = active = false; request++;
+      component?.setParameter('buildingGlowActive', 0);
+      await segmented.setEnabled(enabled);
+    },
     startReveal(): void {
       started = true;
       if (motion?.matches) { component?.setParameter('buildingRevealZ', revealHeight(...bounds, 0, true)); revealing = false; }
@@ -112,6 +120,12 @@ export function createLangSplatBuildingGlow(app: PCApp, root: Entity, model: Ent
     },
     update(delta: number): void {
       if (disposed || signal.aborted) return;
+      segmented.update(delta);
+      const transform = root.getWorldTransform();
+      if (!modelTransform.equals(transform)) {
+        modelTransform = transform.clone();
+        component?.setParameter('buildingGlowWorldToModel', new Mat4().copy(transform).invert().data);
+      }
       const step = Math.max(0, Math.min(delta, .2));
       time += step; elapsed += Math.max(0, delta);
       if (revealing && started) revealTime += step;
@@ -131,6 +145,7 @@ export function createLangSplatBuildingGlow(app: PCApp, root: Entity, model: Ent
     dispose(): void {
       disposed = true; desired = active = false; request++;
       component?.setWorkBufferModifier(null);
+      segmented.dispose();
       for (const name of names) component?.deleteParameter(name);
       for (const texture of textures) texture.destroy(); textures.clear();
     },

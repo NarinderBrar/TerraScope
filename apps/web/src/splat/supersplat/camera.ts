@@ -3,6 +3,14 @@ import type { PCApp } from './pc-app';
 import type { mapViewFrame } from '../mapViewFrame';
 import { PointerController } from './controllers';
 
+export interface SurfaceControls {
+  pan(x: number, y: number, dx: number, dy: number): void;
+  orbit(dx: number, dy: number): void;
+  focus(x: number, y: number): void;
+  constrainElevation(elevation: number): number;
+  reset(): void;
+}
+
 /** Viewer adapter for SuperSplat's PointerController and azimuth/elevation convention. */
 export class Camera {
   readonly mainCamera: Entity;
@@ -19,6 +27,7 @@ export class Camera {
   minDistance = .005;
   zoomFloor = .001;
   readonly ortho = false;
+  surfaceControls?: SurfaceControls;
   private framing: BoundingBox | undefined;
   private dirty = true;
   private entryFrame: ReturnType<typeof mapViewFrame> | undefined;
@@ -37,12 +46,13 @@ export class Camera {
   get worldTransform() { return this.mainCamera.getWorldTransform(); }
   setAzimElev(azim: number, elevation: number): void {
     this.azim = azim;
-    this.elevation = Math.max(-90, Math.min(89, elevation));
+    this.elevation = this.surfaceControls?.constrainElevation(elevation) ?? Math.max(-90, Math.min(89, elevation));
     this.dirty = true;
     this.update(0);
   }
   setDistance(distance: number, _damping = 1): void {
     this.distanceTween.value.distance = Math.max((this.minDistance ?? .005) * this.fovFactor, Math.min((this.maxDistance ?? 1000) * this.fovFactor, distance));
+    if (this.surfaceControls) this.elevation = this.surfaceControls.constrainElevation(this.elevation);
     this.dirty = true;
     this.update(0);
   }
@@ -54,6 +64,7 @@ export class Camera {
     this.setFocalPoint(position.sub(offset));
   }
   pickFocalPoint(x: number, y: number): void {
+    if (this.surfaceControls) { this.surfaceControls.focus(x, y); return; }
     // Focus on the model's horizontal ground plane; no editor picking passes are installed.
     const canvas = this.scene.app.graphicsDevice.canvas as HTMLCanvasElement;
     const point = this.camera.screenToWorld(x * canvas.clientWidth, y * canvas.clientHeight, 1);
@@ -77,8 +88,15 @@ export class Camera {
     this.azim = this.entryFrame.azimuth;
     this.elevation = this.entryFrame.elevation;
     this.distanceTween.value.distance = this.entryFrame.halfHeight / Math.tan(this.camera.fov * Math.PI / 360) * this.fovFactor / this.sceneRadius;
+    this.surfaceControls?.reset();
+    if (this.surfaceControls) this.elevation = this.surfaceControls.constrainElevation(this.elevation);
     this.dirty = true;
     this.update(0);
+  }
+  updateClipping(): void {
+    const distance = this.distance * this.sceneRadius / this.fovFactor;
+    this.camera.farClip = Math.max(1000, this.sceneRadius * 30, distance * 4);
+    this.camera.nearClip = Math.max(0.1, distance / 100000);
   }
   update(delta: number): void {
     if (delta > 0) this.controller?.update(delta);
@@ -87,8 +105,7 @@ export class Camera {
     const az = -this.azim * Math.PI / 180;
     const el = -this.elevation * Math.PI / 180;
     const distance = this.distance * this.sceneRadius / this.fovFactor;
-    this.camera.farClip = Math.max(1000, this.sceneRadius * 30, distance * 4);
-    this.camera.nearClip = Math.max(0.1, distance / 100000);
+    this.updateClipping();
     this.mainCamera.setPosition(
       this.focalPoint.x - Math.cos(el) * Math.sin(az) * distance,
       this.focalPoint.y + Math.sin(el) * distance,

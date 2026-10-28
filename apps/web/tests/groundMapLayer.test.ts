@@ -59,6 +59,11 @@ it('streams new imagery with the camera, resumes after hiding, and destroys GPU 
   expect(groundMaterial.blendType).toBe(BLEND_NONE);
   expect(groundMaterial.transparent).toBe(false);
   expect(groundMaterial.depthWrite).toBe(false);
+  const initialFetches = vi.mocked(fetchWorldImageryTile).mock.calls.length;
+  layer.setReference!({ ...reference, origin: { ...reference.origin, lon: reference.origin.lon + .00000001 } });
+  await settle();
+  expect(vi.mocked(fetchWorldImageryTile)).toHaveBeenCalledTimes(initialFetches);
+  expect(resources.meshes.some(mesh => (mesh as unknown as { setPositions: ReturnType<typeof vi.fn> }).setPositions.mock.calls.length > 1)).toBe(true);
   layer.setOpacity!(.5);
   expect(groundMaterial.blendType).toBe(BLEND_NORMAL);
   expect(groundMaterial.opacity).toBe(.5);

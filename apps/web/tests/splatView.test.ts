@@ -6,13 +6,12 @@ import { SplatView } from '../src/splat/SplatView';
 import { SKYFALL_SCENES } from '../src/data/splatScenes';
 import { createSplatSession } from '../src/splat/session';
 import { existsSync, readFileSync } from 'node:fs';
-import sourceHashes from '../src/data/splatSourceHashes.json';
 
 vi.mock('../src/splat/session', () => ({ createSplatSession: vi.fn() }));
 
 let container: HTMLDivElement;
 let root: Root;
-const session = { dispose: vi.fn(), reset: vi.fn(), reloadMap: vi.fn(), setMapVisible: vi.fn(), retryDetail: vi.fn(), setBuildingsEnabled: vi.fn().mockResolvedValue(undefined), setGlowCategory: vi.fn().mockResolvedValue(undefined) };
+const session = { dispose: vi.fn(), reset: vi.fn(), reloadMap: vi.fn(), setMapVisible: vi.fn(), retryDetail: vi.fn(), setSegmentedEnabled: vi.fn().mockResolvedValue(undefined) };
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
@@ -67,43 +66,28 @@ describe('map-aligned scene lifecycle', () => {
     await settle();
     expect(vi.mocked(createSplatSession).mock.calls[0][8]).toEqual(entryOrientation);
   });
-  it('keeps glow disabled when scene exports have not been published', async () => {
+  it('disables segmented view when classifications are unavailable', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })));
     vi.mocked(createSplatSession).mockResolvedValue(session);
     const scene = SKYFALL_SCENES[0];
     await act(async () => root.render(createElement(SplatView, { active: true, sceneMeta: scene, entryBounds: scene.bounds, onClose: vi.fn() })));
     await settle();
-    expect((container.querySelector('.building-highlights-control button') as HTMLButtonElement).disabled).toBe(true);
-    expect(container.textContent).toContain('Scene training pending');
+    expect((container.querySelector('[role="switch"]') as HTMLInputElement).disabled).toBe(true);
+    expect(container.textContent).toContain('Classifications unavailable');
   });
-  it('enables glow on another registered scene when both scene-specific exports become available', async () => {
-    const scene = SKYFALL_SCENES[0];
-    const template = JSON.parse(readFileSync('public/semantics/NYC_010-building-glow.json', 'utf8'));
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      const stem = url.includes('-vegetation-') ? 'vegetation' : 'building';
-      return new Response(JSON.stringify({ ...template, scene: scene.id,
-        kind: `langsplat-${stem}-glow`, asset: `${scene.id}-${stem}-glow.bin`,
-        sourceSha256: sourceHashes[scene.id as keyof typeof sourceHashes] }));
-    }));
-    vi.mocked(createSplatSession).mockResolvedValue(session);
-    await act(async () => root.render(createElement(SplatView, { active: true, sceneMeta: scene, entryBounds: scene.bounds, onClose: vi.fn() })));
-    await settle();
-    const button = container.querySelector('.building-highlights-control button') as HTMLButtonElement;
-    expect(button.disabled).toBe(false);
-    await act(async () => button.click());
-    expect(session.setBuildingsEnabled).toHaveBeenLastCalledWith(true);
-  });
-  it('docks scene controls on the right and returns a geographic camera snapshot through its toggle', async () => {
+  it('docks scene controls on the right without a 2D/3D switch', async () => {
     const view = { center: { lon: -73.99, lat: 40.73 }, zoom: 17 };
     vi.mocked(createSplatSession).mockResolvedValue({ ...session, getMapView: () => view });
     const scene = SKYFALL_SCENES.find(s => s.id === 'NYC_010')!, onClose = vi.fn();
     await act(async () => root.render(createElement(SplatView, { active: true, sceneMeta: scene, entryBounds: scene.bounds, onClose })));
     await settle();
     const panel = container.querySelector('.splat-right-panel')!;
-    expect(panel.textContent).toContain(scene.name); expect(panel.textContent).toContain('Reset view');
+    expect(panel.textContent).toContain(scene.name); expect(panel.textContent).not.toContain('Reset view');
+    expect(panel.textContent).not.toContain('Urban Lab');
     expect(panel.textContent).toContain('Back to Map');
-    await act(async () => (panel.querySelector('[role="switch"]') as HTMLButtonElement).click());
-    expect(onClose).toHaveBeenCalledWith(view, '2d');
+    expect(panel.querySelectorAll('[role="switch"]')).toHaveLength(1);
+    await act(async () => (panel.querySelector('button.primary') as HTMLButtonElement).click());
+    expect(onClose).toHaveBeenCalledWith(view);
   });
   it('returns the current camera to the map through Back to Map and Escape', async () => {
     const view = { center: { lon: -73.99, lat: 40.73 }, zoom: 18,
@@ -113,37 +97,42 @@ describe('map-aligned scene lifecycle', () => {
     await act(async () => root.render(createElement(SplatView, { active: true, sceneMeta: scene, entryBounds: scene.bounds, onClose })));
     await settle();
     await act(async () => (container.querySelector('button.primary') as HTMLButtonElement).click());
-    expect(onClose).toHaveBeenLastCalledWith(view, 'map');
+    expect(onClose).toHaveBeenLastCalledWith(view);
     await act(async () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
-    expect(onClose).toHaveBeenLastCalledWith(view, 'map');
+    expect(onClose).toHaveBeenLastCalledWith(view);
   });
-  it.each(SKYFALL_SCENES)('offers LangSplat building pulses only when trained for $id', async (scene) => {
+  it.each(SKYFALL_SCENES)('toggles all classifications for $id without restarting the session or camera', async (scene) => {
     vi.mocked(createSplatSession).mockResolvedValue(session);
     await act(async () => root.render(createElement(SplatView, { active: true, sceneMeta: scene, entryBounds: scene.bounds, onClose: vi.fn() })));
     await settle();
-    const button = container.querySelector('.building-highlights-control button') as HTMLButtonElement;
-    expect(button.textContent).toBe('Start glow');
-    const available = ['building', 'vegetation'].every(stem => existsSync(`public/semantics/${scene.id}-${stem}-glow.json`));
-    expect(button.disabled).toBe(!available);
-    if (!available) return;
-    await act(async () => button.click());
-    expect(session.setBuildingsEnabled).toHaveBeenLastCalledWith(true);
-    expect(button.getAttribute('aria-pressed')).toBe('true');
-    expect(container.textContent).toContain('glow capped at 50%');
-    expect(container.querySelector('input[type="range"]')).toBeNull();
-    const dropdown = container.querySelector('[aria-label="Glow target"]') as HTMLSelectElement;
-    expect(dropdown.value).toBe('buildings');
-    await act(async () => {
-      dropdown.value = 'vegetation'; dropdown.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    expect(session.setGlowCategory).toHaveBeenLastCalledWith('vegetation');
-    expect(container.textContent).not.toContain('OpenStreetMap building outlines');
-    expect(container.querySelector('.segmented-control')).toBeNull();
-    expect(container.querySelector('.tree-candidates-control')).toBeNull();
+    const toggle = container.querySelector('[role="switch"]') as HTMLInputElement;
+    expect(toggle.disabled).toBe(false); expect(toggle.checked).toBe(false);
+    expect(container.querySelector('select')).toBeNull();
+    await act(async () => toggle.click());
+    expect(session.setSegmentedEnabled).toHaveBeenLastCalledWith(true);
+    expect(toggle.checked).toBe(true);
+    expect(container.querySelector('[aria-label="Segment colours"]')).not.toBeNull();
+    expect(container.textContent).toContain('Not detected:');
+    expect(container.textContent).toContain('AC units');
+    await act(async () => toggle.click());
+    expect(session.setSegmentedEnabled).toHaveBeenLastCalledWith(false);
+    expect(toggle.checked).toBe(false);
+    expect(container.querySelector('[aria-label="Segment colours"]')).toBeNull();
     expect(session.reset).not.toHaveBeenCalled();
-    await act(async () => button.click());
-    expect(session.setBuildingsEnabled).toHaveBeenLastCalledWith(false);
-    expect(button.getAttribute('aria-pressed')).toBe('false');
+    expect(createSplatSession).toHaveBeenCalledOnce();
+  });
+  it('keeps normal colours after a failed segment load and allows retry', async () => {
+    session.setSegmentedEnabled.mockRejectedValueOnce(new Error('Download failed'));
+    vi.mocked(createSplatSession).mockResolvedValue(session);
+    const scene = SKYFALL_SCENES[0];
+    await act(async () => root.render(createElement(SplatView, { active: true, sceneMeta: scene, entryBounds: scene.bounds, onClose: vi.fn() })));
+    await settle();
+    const toggle = container.querySelector('[role="switch"]') as HTMLInputElement;
+    await act(async () => toggle.click());
+    expect(toggle.checked).toBe(false); expect(toggle.disabled).toBe(false);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Download failed');
+    await act(async () => toggle.click());
+    expect(toggle.checked).toBe(true);
   });
   it('keeps the coarse viewer interactive while refinement runs and fails', async () => {
     vi.mocked(createSplatSession).mockResolvedValue(session);

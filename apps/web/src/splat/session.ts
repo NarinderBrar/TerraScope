@@ -10,14 +10,15 @@ import { mapViewFrame } from './mapViewFrame';
 import { PCApp } from './supersplat/pc-app';
 import { Camera } from './supersplat/camera';
 import type { GeoBounds, SplatSceneMeta } from '../data/splatScenes';
-import { createUrbanOverlay } from '../urban/UrbanOverlay';
 import type { UrbanOverlayState } from '../urban/types';
 import { createLangSplatBuildingGlow, type GlowCategory } from './LangSplatBuildingGlow';
 import { captureEarthView, captureMapView, EARTH_RADIUS, globeBlend, type GeographicView } from '../map/navigation3D';
 import { createOrbitEarth } from '../map/OrbitEarth';
+import { createSurfaceNavigation, referenceAtFocus } from '../map/SurfaceNavigation';
+import { geographicToModel, modelToGeographic } from '../data/splatGeoreference';
 import { metricFrame } from '../urban/model';
 
-export interface SplatSession { dispose(): void; reset(): void; setMapVisible(visible: boolean): void; reloadMap(): void; retryDetail(): void; setUrbanState?(state: UrbanOverlayState | null): void; setBuildingsEnabled?(enabled: boolean): Promise<void>; setGlowCategory?(category: GlowCategory): Promise<void>; getMapView?(): GeographicView | null }
+export interface SplatSession { dispose(): void; reset(): void; setSegmentedEnabled?(enabled: boolean): Promise<void>; setMapVisible(visible: boolean): void; reloadMap(): void; retryDetail(): void; setUrbanState?(state: UrbanOverlayState | null): void; setBuildingsEnabled?(enabled: boolean): Promise<void>; setGlowCategory?(category: GlowCategory): Promise<void>; getMapView?(): GeographicView | null }
 
 export async function createSplatSession(
   canvas: HTMLCanvasElement,
@@ -50,11 +51,13 @@ export async function createSplatSession(
   let chunks: SplatChunkLoader | undefined;
   let buildingGlow: ReturnType<typeof createLangSplatBuildingGlow> | undefined;
   let earth: ReturnType<typeof createOrbitEarth> | undefined;
+  let navigation: ReturnType<typeof createSurfaceNavigation> | undefined;
   let disposed = false;
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
     indexController.abort();
+    navigation?.dispose();
     buildingGlow?.dispose();
     earth?.dispose();
     signal.removeEventListener('abort', dispose);
@@ -115,14 +118,25 @@ export async function createSplatSession(
     modelRoot.addChild(model);
     const bounds = new BoundingBox();
     bounds.setFromTransformedAabb(resource.aabb, modelRoot.getWorldTransform());
-    camera.frame(bounds, mapViewFrame(entryBounds, meta.georeference, entryOrientation));
+    const frame = mapViewFrame(entryBounds, meta.georeference, entryOrientation);
+    const initialFocus = modelToGeographic(meta.georeference, frame.focalPoint[0], -frame.focalPoint[2]);
+    const viewScale = Math.cos(initialFocus.lat * Math.PI / 180) / Math.cos(meta.georeference.origin.lat * Math.PI / 180);
+    camera.frame(bounds, { ...frame, halfHeight: frame.halfHeight * viewScale, focalPoint: [0, meta.georeference.groundZ, 0] });
     const metresPerUnit = metricFrame(meta).metresPerUnit;
     camera.maxDistance = 500000000 / metresPerUnit / camera.sceneRadius;
     camera.minDistance = .1 / metresPerUnit / camera.sceneRadius; camera.zoomFloor = 0;
-    groundMap = createGroundMap(app, modelRoot, meta.georeference, camera, onMapStatus);
-    earth = createOrbitEarth(app, meta.georeference.origin, meta.georeference);
+    const groundRoot = new Entity('Registered satellite frame', app);
+    groundRoot.setLocalRotation(modelRoot.getLocalRotation()); app.root.addChild(groundRoot);
+    groundMap = createGroundMap(app, groundRoot, meta.georeference, camera, onMapStatus);
+    earth = createOrbitEarth(app, meta.georeference.origin, meta.georeference, camera);
+    navigation = createSurfaceNavigation(camera, meta.georeference, initialFocus, groundRoot, earth, metresPerUnit, (focus, next) => {
+      earth?.setFocus(focus); groundMap?.setReference?.(next);
+      const offset = geographicToModel(next, meta.georeference.origin.lon, meta.georeference.origin.lat);
+      modelRoot.setLocalPosition(modelRoot.getLocalRotation().transformVector(new Vec3(offset[0], offset[1], 0)));
+      const scale = Math.cos(focus.lat * Math.PI / 180) / Math.cos(meta.georeference.origin.lat * Math.PI / 180);
+      modelRoot.setLocalScale(scale, scale, 1);
+    });
     let planetBlend = 0, planetOffset = 0, mapVisible = true, groundVisible = true, tilesReady = false;
-    const urban = createUrbanOverlay(app, modelRoot, meta);
     buildingGlow = createLangSplatBuildingGlow(app, modelRoot, model, meta.id, indexController.signal,
       [resource.aabb.center.z - resource.aabb.halfExtents.z, resource.aabb.center.z + resource.aabb.halfExtents.z], metresPerUnit);
     const reloadMap = (): void => {
@@ -144,7 +158,7 @@ export async function createSplatSession(
       const visible = mapVisible && planetBlend < 1;
       if (visible !== groundVisible) { groundVisible = visible; groundMap?.setVisible(visible); }
       if (visible) groundMap?.update();
-      urban.update(delta); buildingGlow?.update(delta);
+      buildingGlow?.update(delta);
     });
     app.start();
     let firstFrameTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -168,12 +182,17 @@ export async function createSplatSession(
     return {
       dispose,
       reset: () => { if (!disposed) { planetOffset = 0; camera?.reset(); } },
-      getMapView: () => !disposed && camera ? planetBlend > .5 && earth
-        ? captureEarthView(camera, meta.georeference.origin, canvas.clientHeight, new Mat4().copy(earth.getWorldTransform()).invert())
-        : captureMapView(camera, modelRoot, meta.georeference, canvas.clientHeight) : null,
+      getMapView: () => {
+        if (disposed || !camera) return null;
+        const view = planetBlend > .5 && earth
+          ? captureEarthView(camera, meta.georeference.origin, canvas.clientHeight, new Mat4().copy(earth.getWorldTransform()).invert())
+          : captureMapView(camera, groundRoot, navigation ? referenceAtFocus(meta.georeference, navigation.focus) : meta.georeference, canvas.clientHeight);
+        const [a, b] = meta.georeference.modelToMercator;
+        return view ? { ...view, orientation: { azimuth: camera.azim - Math.atan2(b, a) * 180 / Math.PI, elevation: camera.elevation } } : null;
+      },
       reloadMap,
       retryDetail: () => chunks?.retry(),
-      setUrbanState: (state) => { if (!disposed) urban.setState(state); },
+      setSegmentedEnabled: (enabled) => buildingGlow?.setSegmentedEnabled(enabled) ?? Promise.resolve(),
       setBuildingsEnabled: (enabled) => buildingGlow?.setEnabled(enabled) ?? Promise.resolve(),
       setGlowCategory: (category) => buildingGlow?.setCategory(category) ?? Promise.resolve(),
       setMapVisible: (visible) => { mapVisible = visible; groundVisible = visible && planetBlend < 1; groundMap?.setVisible(groundVisible); },

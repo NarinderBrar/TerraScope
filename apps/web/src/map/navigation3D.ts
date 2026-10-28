@@ -8,6 +8,13 @@ import { SKYFALL_SCENES, type SplatSceneMeta } from '../data/splatScenes';
 export interface GeographicOrientation { azimuth: number; elevation: number }
 export interface GeographicView { center: { lon: number; lat: number }; zoom: number; orientation?: GeographicOrientation }
 export const EARTH_RADIUS = 6371008.8;
+/** Inverse of globePoint for a normalized radial direction. */
+export function globeDirectionToGeographic(hit: Vec3, anchor: { lon: number; lat: number }) {
+  const p0 = anchor.lat * Math.PI / 180, north = -hit.z;
+  const lat = Math.asin(Math.max(-1, Math.min(1, hit.y * Math.sin(p0) + north * Math.cos(p0)))) * 180 / Math.PI;
+  const lon = ((anchor.lon + Math.atan2(hit.x, hit.y * Math.cos(p0) - north * Math.sin(p0)) * 180 / Math.PI + 540) % 360) - 180;
+  return { lon, lat };
+}
 export function globeBlend(distance: number): number {
   const t = Math.max(0, Math.min(1, (distance - 150000) / 650000));
   return t * t * (3 - 2 * t);
@@ -59,9 +66,7 @@ export function captureEarthView(camera: Camera, anchor: { lon: number; lat: num
   const t = -b - Math.sqrt(discriminant);
   if (t <= 0) return null;
   const hit = origin.clone().add(direction.clone().mulScalar(t)).add(new Vec3(0, EARTH_RADIUS, 0)).mulScalar(1 / EARTH_RADIUS);
-  const p0 = anchor.lat * Math.PI / 180, north = -hit.z;
-  const lat = Math.asin(Math.max(-1, Math.min(1, hit.y * Math.sin(p0) + north * Math.cos(p0)))) * 180 / Math.PI;
-  const lon = ((anchor.lon + Math.atan2(hit.x, hit.y * Math.cos(p0) - north * Math.sin(p0)) * 180 / Math.PI + 540) % 360) - 180;
+  const { lon, lat } = globeDirectionToGeographic(hit, anchor);
   const metresPerPixel = 2 * t * Math.tan(camera.camera.fov * Math.PI / 360) / height;
   return { center: { lon, lat }, zoom: Math.max(MIN_ZOOM, Math.min(MAX_ZOOM,
     Math.log2(MERCATOR_CIRCUMFERENCE * Math.cos(lat * Math.PI / 180) / (256 * metresPerPixel)))) };
